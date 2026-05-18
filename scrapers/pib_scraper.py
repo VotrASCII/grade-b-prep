@@ -29,7 +29,11 @@ HEADERS = {
 
 PIB_BASE = "https://www.pib.gov.in"
 PRID_RE = re.compile(r"PRID=(\d+)", re.IGNORECASE)
-DATE_RE = re.compile(r"Posted on:\s*(\d{1,2}\s+\w+\s+\d{4})", re.IGNORECASE)
+DATE_RE = re.compile(
+    r"(?:Posted\s+on|Date)\s*:?\s*(\d{1,2}\s+[A-Za-z]{3,9}\s+20\d{2})",
+    re.IGNORECASE,
+)
+GENERIC_DATE_RE = re.compile(r"\b(\d{1,2}\s+[A-Za-z]{3,9}\s+20\d{2})\b")
 
 
 def _get(url: str, params: "dict | None" = None, timeout: int = 20) -> "requests.Response | None":
@@ -58,6 +62,41 @@ def _parse_pib_date(text: str) -> "date | None":
     return None
 
 
+def _in_date_range(release_date: "date | None", start_date: "date | None", end_date: "date | None") -> bool:
+    if start_date is None or end_date is None:
+        return True
+    if release_date is None:
+        return False
+    return start_date <= release_date <= end_date
+
+
+def _extract_listing_date(link) -> "date | None":
+    candidates = []
+    node = link
+    for _ in range(4):
+        if not node:
+            break
+        text = node.get_text(" ", strip=True) if hasattr(node, "get_text") else ""
+        if text:
+            candidates.append(text)
+        node = node.parent
+
+    parent = link.find_parent(["li", "tr", "div"])
+    if parent:
+        for sibling in parent.find_previous_siblings(limit=3):
+            text = sibling.get_text(" ", strip=True)
+            if text:
+                candidates.append(text)
+
+    for text in candidates:
+        match = DATE_RE.search(text) or GENERIC_DATE_RE.search(text)
+        if match:
+            parsed = _parse_pib_date(match.group(1))
+            if parsed:
+                return parsed
+    return None
+
+
 def _fetch_detail_page(prid: str) -> str:
     url = f"{PIB_DETAIL_BASE}{prid}&lang=1"
     r = _get(url)
@@ -80,16 +119,21 @@ def _fetch_detail_page(prid: str) -> str:
     return soup.get_text(" ", strip=True)[:5000]
 
 
-def _parse_releases_from_html(html: str, year: int, month: int) -> list[dict]:
+def _parse_releases_from_html(
+    html: str,
+    year: int,
+    month: int,
+    start_date: "date | None" = None,
+    end_date: "date | None" = None,
+    assumed_date: "date | None" = None,
+) -> list[dict]:
     """Extract PRID links from PIB listing HTML, filtering to the target month/year."""
     soup = BeautifulSoup(html, "html.parser")
     seen: set[str] = set()
     releases = []
+    skipped_without_date = 0
 
-    for li in soup.find_all("li"):
-        link = li.find("a", href=PRID_RE)
-        if not link:
-            continue
+    for link in soup.find_all("a", href=PRID_RE):
         href = link.get("href", "")
         m = PRID_RE.search(href)
         if not m:
@@ -98,24 +142,26 @@ def _parse_releases_from_html(html: str, year: int, month: int) -> list[dict]:
         if prid in seen:
             continue
 
-        li_text = li.get_text(" ", strip=True)
-        date_match = DATE_RE.search(li_text)
-        if date_match:
-            release_date = _parse_pib_date(date_match.group(1))
+        release_date = _extract_listing_date(link) or assumed_date
+        if start_date is not None and end_date is not None:
+            if not _in_date_range(release_date, start_date, end_date):
+                if release_date is None:
+                    skipped_without_date += 1
+                continue
+        else:
             if release_date and (release_date.year != year or release_date.month != month):
                 continue
-            date_str = str(release_date) if release_date else f"{year}-{month:02d}"
-        else:
-            date_str = f"{year}-{month:02d}"
 
         seen.add(prid)
         releases.append({
             "title": link.get_text(strip=True),
-            "date": date_str,
+            "date": str(release_date) if release_date else f"{year}-{month:02d}",
             "url": urljoin(PIB_BASE, href),
             "prid": prid,
         })
 
+    if skipped_without_date:
+        print(f"  Skipped {skipped_without_date} PIB listing rows without parseable dates.")
     return releases
 
 
@@ -140,7 +186,12 @@ def _has_select_option(soup: BeautifulSoup, select_name: str, value: str) -> boo
     return any(option.get("value") == value for option in select_tag.find_all("option"))
 
 
-def _build_pib_post_data(soup: BeautifulSoup, year: int, month: int) -> "dict[str, str]":
+def _build_pib_post_data(
+    soup: BeautifulSoup,
+    year: int,
+    month: int,
+    day: int = 0,
+) -> "dict[str, str]":
     post_data = {
         "__EVENTTARGET": "ctl00$ContentPlaceHolder1$ddlMonth",
         "__EVENTARGUMENT": "",
@@ -156,14 +207,19 @@ def _build_pib_post_data(soup: BeautifulSoup, year: int, month: int) -> "dict[st
         if name:
             post_data[name] = _selected_option_value(select_tag)
 
-    post_data["ctl00$ContentPlaceHolder1$ddlday"] = "0"
+    post_data["ctl00$ContentPlaceHolder1$ddlday"] = str(day)
     post_data["ctl00$ContentPlaceHolder1$ddlMinistry"] = "0"
     post_data["ctl00$ContentPlaceHolder1$ddlYear"] = str(year)
     post_data["ctl00$ContentPlaceHolder1$ddlMonth"] = str(month)
     return post_data
 
 
-def _scrape_pib_http(year: int, month: int) -> list[dict]:
+def _scrape_pib_http(
+    year: int,
+    month: int,
+    start_date: "date | None" = None,
+    end_date: "date | None" = None,
+) -> list[dict]:
     """
     Scrape the PIB listing page with a direct ASP.NET postback.
     PIB keeps the filter state in hidden form fields, so a GET with query
@@ -184,19 +240,53 @@ def _scrape_pib_http(year: int, month: int) -> list[dict]:
         print(f"  [WARN] PIB month {month} is not available in the listing dropdown.")
         return []
 
-    try:
-        r2 = requests.post(
-            PIB_RELEASES_URL,
-            headers=HEADERS,
-            data=_build_pib_post_data(soup, year, month),
-            timeout=30,
-        )
-        r2.raise_for_status()
-    except Exception as e:
-        print(f"  [WARN] PIB form POST failed: {e}")
-        return []
+    releases = []
+    seen: set[str] = set()
+    if start_date is not None and end_date is not None:
+        cursor = start_date
+        while cursor <= end_date:
+            try:
+                r2 = requests.post(
+                    PIB_RELEASES_URL,
+                    headers=HEADERS,
+                    data=_build_pib_post_data(soup, year, month, cursor.day),
+                    timeout=30,
+                )
+                r2.raise_for_status()
+            except Exception as e:
+                print(f"  [WARN] PIB form POST failed for {cursor}: {e}")
+                cursor += date.resolution
+                continue
 
-    releases = _parse_releases_from_html(r2.text, year, month)
+            day_releases = _parse_releases_from_html(
+                r2.text,
+                year,
+                month,
+                start_date,
+                end_date,
+                assumed_date=cursor,
+            )
+            for release in day_releases:
+                prid = release.get("prid", "")
+                if prid and prid not in seen:
+                    seen.add(prid)
+                    releases.append(release)
+            cursor += date.resolution
+    else:
+        try:
+            r2 = requests.post(
+                PIB_RELEASES_URL,
+                headers=HEADERS,
+                data=_build_pib_post_data(soup, year, month),
+                timeout=30,
+            )
+            r2.raise_for_status()
+        except Exception as e:
+            print(f"  [WARN] PIB form POST failed: {e}")
+            return []
+
+        releases = _parse_releases_from_html(r2.text, year, month)
+
     print(f"  HTTP form POST: {len(releases)} PIB releases found.")
     return releases
 
@@ -236,7 +326,12 @@ async def _select_and_wait(page, sel: str, value: str, label: str) -> bool:
         return False
 
 
-async def _scrape_pib_playwright(year: int, month: int) -> list[dict]:
+async def _scrape_pib_playwright(
+    year: int,
+    month: int,
+    start_date: "date | None" = None,
+    end_date: "date | None" = None,
+) -> list[dict]:
     try:
         from playwright.async_api import async_playwright
     except ImportError:
@@ -288,7 +383,7 @@ async def _scrape_pib_playwright(year: int, month: int) -> list[dict]:
             await context.close()
             await browser.close()
 
-    releases = _parse_releases_from_html(html, year, month)
+    releases = _parse_releases_from_html(html, year, month, start_date, end_date)
     print(f"  Playwright: {len(releases)} PIB releases found.")
     return releases
 
@@ -297,17 +392,25 @@ async def _scrape_pib_playwright(year: int, month: int) -> list[dict]:
 # Public entry point
 # ---------------------------------------------------------------------------
 
-def scrape_pib(year: int, month: int) -> list[dict]:
+def scrape_pib(
+    year: int,
+    month: int,
+    start_date: "date | None" = None,
+    end_date: "date | None" = None,
+) -> list[dict]:
     """
     Scrape PIB press releases for the given year and month.
     Returns list of {title, date, url, content} dicts.
     """
-    print(f"  Fetching PIB releases for {year}-{month:02d} ...")
+    if start_date and end_date:
+        print(f"  Fetching PIB releases for {start_date} to {end_date} ...")
+    else:
+        print(f"  Fetching PIB releases for {year}-{month:02d} ...")
 
-    releases = _scrape_pib_http(year, month)
+    releases = _scrape_pib_http(year, month, start_date, end_date)
     if not releases:
         try:
-            releases = asyncio.run(_scrape_pib_playwright(year, month))
+            releases = asyncio.run(_scrape_pib_playwright(year, month, start_date, end_date))
         except (ImportError, Exception) as e:
             print(f"  [WARN] Playwright fallback failed ({e}).")
 
@@ -327,6 +430,19 @@ def scrape_pib(year: int, month: int) -> list[dict]:
             time.sleep(0.5)
 
     print(f"  PIB: {len(results)} releases fetched for {year}-{month:02d}.")
+    return results
+
+
+def scrape_pib_range(start_date: date, end_date: date) -> list[dict]:
+    results = []
+    cursor = date(start_date.year, start_date.month, 1)
+    last = date(end_date.year, end_date.month, 1)
+    while cursor <= last:
+        month_start = max(start_date, cursor)
+        next_month = date(cursor.year + 1, 1, 1) if cursor.month == 12 else date(cursor.year, cursor.month + 1, 1)
+        month_end = min(end_date, next_month - date.resolution)
+        results.extend(scrape_pib(cursor.year, cursor.month, month_start, month_end))
+        cursor = next_month
     return results
 
 

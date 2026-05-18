@@ -2,7 +2,8 @@ import json
 from pathlib import Path
 
 
-def build_prompt(content: str, month_name: str, year: int) -> str:
+def build_prompt(content: str, period_name: str, year: int | str | None = None) -> str:
+    period_label = f"{period_name} {year}".strip() if year else period_name
     taxonomy_path = Path("data/patterns/taxonomy.json")
     taxonomy = json.loads(taxonomy_path.read_text())
 
@@ -33,13 +34,13 @@ def build_prompt(content: str, month_name: str, year: int) -> str:
 
     prompt = f"""\
 You are an expert RBI Grade B Phase 1 General Awareness exam coach.
-Below is raw content from PIB press releases and RBI circulars for {month_name} {year}.
+Below is raw content from PIB press releases and RBI circulars for {period_label}.
 Do two things strictly as instructed.
 
 ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
-PART 1 — MONTHLY GA SUMMARY
+PART 1 — GA SUMMARY
 ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
-Write a structured markdown summary of the most exam-relevant events from this month.
+Write a structured markdown summary of the most exam-relevant events from this period.
 
 Use exactly these sections:
 ## RBI & Monetary Policy
@@ -109,7 +110,7 @@ Answer: A
 Before finalizing PART 2, verify that all 80 questions have an Answer: line. Do not output a question without its answer.
 
 ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
-RAW CONTENT — {month_name.upper()} {year}
+RAW CONTENT — {period_label.upper()}
 ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
 {content}"""
 

@@ -1,7 +1,7 @@
 """
 Module 4 — Daily Pipeline Runner
-Processes one month of PIB + RBI data, generates a GA summary and MCQs via Ollama.
-Usage: python pipeline/daily_runner.py --day N
+Processes monthly or weekly PIB + RBI data, generates a GA summary and MCQs via Ollama.
+Usage: python pipeline/daily_runner.py --day N OR python pipeline/daily_runner.py --week N
 """
 
 import argparse
@@ -15,6 +15,7 @@ import smtplib
 import sys
 import time
 from concurrent.futures import ThreadPoolExecutor, as_completed
+from datetime import date, datetime, timedelta
 from email.message import EmailMessage
 from pathlib import Path
 
@@ -38,6 +39,8 @@ from config import (
     OLLAMA_NUM_PREDICT,
     OLLAMA_READ_TIMEOUT_SECONDS,
     OLLAMA_URL,
+    WEEK_RANGE_END,
+    WEEK_RANGE_START,
 )
 from pipeline.prompt_builder import build_prompt   # imported but called inside run_day()
 
@@ -56,6 +59,105 @@ MONTH_NAMES = {
     5: "May", 6: "June", 7: "July", 8: "August",
     9: "September", 10: "October", 11: "November", 12: "December",
 }
+
+SOURCE_DATE_FORMATS = (
+    "%Y-%m-%d",
+    "%b %d, %Y",
+    "%B %d, %Y",
+    "%d %b %Y",
+    "%d %B %Y",
+)
+
+
+def _parse_iso_date(value: str) -> date:
+    return datetime.strptime(value, "%Y-%m-%d").date()
+
+
+def _period_display(period_name: str, year: int | str | None = None) -> str:
+    return f"{period_name} {year}".strip() if year else period_name
+
+
+def _period_key(start_date: date, end_date: date) -> str:
+    return f"{start_date:%Y-%m-%d}_to_{end_date:%Y-%m-%d}"
+
+
+def _month_key(year: int, month: int) -> str:
+    return f"{year}-{month:02d}"
+
+
+def _configured_week_periods() -> list[tuple[date, date]]:
+    start = _parse_iso_date(WEEK_RANGE_START)
+    end = _parse_iso_date(WEEK_RANGE_END)
+    if end < start:
+        raise RuntimeError(
+            f"Invalid weekly date range: {WEEK_RANGE_START} to {WEEK_RANGE_END}."
+        )
+
+    periods = []
+    cursor = start
+    while cursor <= end:
+        period_end = min(cursor + timedelta(days=6), end)
+        periods.append((cursor, period_end))
+        cursor = period_end + timedelta(days=1)
+    return periods
+
+
+def get_week_period(week: int) -> tuple[date, date]:
+    periods = _configured_week_periods()
+    if week < 1 or week > len(periods):
+        raise RuntimeError(f"Week {week} is not configured. Valid weeks: 1-{len(periods)}.")
+    return periods[week - 1]
+
+
+def total_configured_weeks() -> int:
+    return len(_configured_week_periods())
+
+
+def _months_in_range(start_date: date, end_date: date) -> list[tuple[int, int]]:
+    months = []
+    cursor = date(start_date.year, start_date.month, 1)
+    last = date(end_date.year, end_date.month, 1)
+    while cursor <= last:
+        months.append((cursor.year, cursor.month))
+        if cursor.month == 12:
+            cursor = date(cursor.year + 1, 1, 1)
+        else:
+            cursor = date(cursor.year, cursor.month + 1, 1)
+    return months
+
+
+def _parse_source_date(item: dict) -> date | None:
+    raw_date = str(item.get("date", "")).strip()
+    for fmt in SOURCE_DATE_FORMATS:
+        try:
+            return datetime.strptime(raw_date, fmt).date()
+        except ValueError:
+            pass
+
+    content = str(item.get("content", ""))
+    match = re.search(r"Posted\s+On:\s*(\d{1,2}\s+[A-Z]{3,9}\s+20\d{2})", content, re.I)
+    if match:
+        for fmt in ("%d %b %Y", "%d %B %Y"):
+            try:
+                return datetime.strptime(match.group(1).title(), fmt).date()
+            except ValueError:
+                pass
+    return None
+
+
+def _filter_items_by_date(items: list[dict], start_date: date, end_date: date) -> list[dict]:
+    filtered = []
+    skipped_unparsed = 0
+    for item in items:
+        item_date = _parse_source_date(item)
+        if item_date is None:
+            skipped_unparsed += 1
+            continue
+        if start_date <= item_date <= end_date:
+            filtered.append(item)
+    if skipped_unparsed:
+        print(f"  Skipped {skipped_unparsed} items with unparseable dates for weekly filtering.")
+    return filtered
 
 
 def _load_env_file(path: Path) -> None:
@@ -243,6 +345,10 @@ def _scrape_cache_path(source: str, year: int, month: int) -> Path:
     return _scrape_cache_dir(year, month) / f"{source}.json"
 
 
+def _period_scrape_cache_path(source: str, output_key: str) -> Path:
+    return SCRAPED_DIR / output_key / f"{source}.json"
+
+
 def _load_scrape_cache(source: str, year: int, month: int) -> list[dict] | None:
     path = _scrape_cache_path(source, year, month)
     if not path.exists():
@@ -273,6 +379,35 @@ def _load_scrape_cache(source: str, year: int, month: int) -> list[dict] | None:
     return None
 
 
+def _load_period_scrape_cache(source: str, output_key: str) -> list[dict] | None:
+    path = _period_scrape_cache_path(source, output_key)
+    if not path.exists():
+        return None
+
+    try:
+        with open(path, encoding="utf-8") as f:
+            data = json.load(f)
+    except Exception as e:
+        print(f"  [WARN] Could not read cached weekly {source.upper()} data at {path}: {e}")
+        return None
+
+    if isinstance(data, list):
+        if data and not _has_enough_detail_content(data):
+            print(
+                f"  [WARN] Cached weekly {source.upper()} data has insufficient detail-page content "
+                f"({_detail_content_status(source, data)}); scraping again."
+            )
+            return None
+        print(
+            f"  Loaded cached weekly {source.upper()} data: {len(data)} items "
+            f"({path})"
+        )
+        return data
+
+    print(f"  [WARN] Ignoring cached weekly {source.upper()} data at {path}: expected a JSON list.")
+    return None
+
+
 def _save_scrape_cache(source: str, year: int, month: int, items: list[dict]) -> None:
     if not items:
         print(f"  [WARN] Not caching empty {source.upper()} scrape result.")
@@ -285,6 +420,16 @@ def _save_scrape_cache(source: str, year: int, month: int, items: list[dict]) ->
         json.dump(items, f, indent=2, ensure_ascii=False)
     tmp_path.replace(path)
     print(f"  Cached {source.upper()} data: {len(items)} items ({path})")
+
+
+def _save_period_scrape_cache(source: str, output_key: str, items: list[dict]) -> None:
+    path = _period_scrape_cache_path(source, output_key)
+    path.parent.mkdir(parents=True, exist_ok=True)
+    tmp_path = path.with_suffix(".json.tmp")
+    with open(tmp_path, "w", encoding="utf-8") as f:
+        json.dump(items, f, indent=2, ensure_ascii=False)
+    tmp_path.replace(path)
+    print(f"  Cached weekly {source.upper()} data: {len(items)} items ({path})")
 
 
 def _clean_generated_text(text: str) -> str:
@@ -312,20 +457,35 @@ def clean_summary_markdown(markdown: str) -> str:
     return cleaned.strip()
 
 
-def _save_raw_ollama_response(year: int, month: int, response: str, suffix: str = "response") -> Path:
+def _save_raw_ollama_response(
+    year: int | str | None,
+    month: int | None,
+    response: str,
+    suffix: str = "response",
+    output_key: str | None = None,
+) -> Path:
     LLM_RAW_DIR.mkdir(parents=True, exist_ok=True)
-    path = LLM_RAW_DIR / f"{year}-{month:02d}-{suffix}.md"
+    key = output_key or _month_key(int(year), int(month))
+    path = LLM_RAW_DIR / f"{key}-{suffix}.md"
     with open(path, "w", encoding="utf-8") as f:
         f.write(response)
     return path
 
 
+def _question_pdf_path_for_key(output_key: str) -> Path:
+    return PDF_Q_DIR / f"{output_key}-qs.pdf"
+
+
+def _summary_pdf_path_for_key(output_key: str) -> Path:
+    return SUMMARY_PDF_DIR / f"{output_key}-summary.pdf"
+
+
 def _question_pdf_path(year: int, month: int) -> Path:
-    return PDF_Q_DIR / f"{year}-{month:02d}-qs.pdf"
+    return _question_pdf_path_for_key(_month_key(year, month))
 
 
 def _summary_pdf_path(year: int, month: int) -> Path:
-    return SUMMARY_PDF_DIR / f"{year}-{month:02d}-summary.pdf"
+    return _summary_pdf_path_for_key(_month_key(year, month))
 
 
 def _markdown_inline_to_html(text: str) -> str:
@@ -335,7 +495,8 @@ def _markdown_inline_to_html(text: str) -> str:
     return escaped
 
 
-def _summary_markdown_to_html(markdown: str, month_name: str, year: int) -> str:
+def _summary_markdown_to_html(markdown: str, month_name: str, year: int | str | None) -> str:
+    period_label = _period_display(month_name, year)
     body_parts = []
     in_list = False
 
@@ -380,7 +541,7 @@ def _summary_markdown_to_html(markdown: str, month_name: str, year: int) -> str:
 <html>
 <head>
   <meta charset="utf-8">
-  <title>RBI Grade B GA Summary - {html.escape(month_name)} {year}</title>
+  <title>RBI Grade B GA Summary - {html.escape(period_label)}</title>
   <style>
     @page {{
       size: A4;
@@ -437,14 +598,15 @@ def _summary_markdown_to_html(markdown: str, month_name: str, year: int) -> str:
 <body>
   <header>
     <h1>RBI Grade B GA Summary</h1>
-    <div class="meta">{html.escape(month_name)} {year}</div>
+    <div class="meta">{html.escape(period_label)}</div>
   </header>
   {''.join(body_parts)}
 </body>
 </html>"""
 
 
-def _questions_to_html(questions: list[dict], month_name: str, year: int) -> str:
+def _questions_to_html(questions: list[dict], month_name: str, year: int | str | None) -> str:
+    period_label = _period_display(month_name, year)
     question_blocks = []
     answer_key_items = []
 
@@ -470,7 +632,7 @@ def _questions_to_html(questions: list[dict], month_name: str, year: int) -> str
 <html>
 <head>
   <meta charset="utf-8">
-  <title>RBI Grade B GA MCQs - {html.escape(month_name)} {year}</title>
+  <title>RBI Grade B GA MCQs - {html.escape(period_label)}</title>
   <style>
     @page {{
       size: A4;
@@ -526,7 +688,7 @@ def _questions_to_html(questions: list[dict], month_name: str, year: int) -> str
 <body>
   <header>
     <h1>RBI Grade B GA Practice MCQs</h1>
-    <div class="meta">{html.escape(month_name)} {year} · {len(questions)} questions</div>
+    <div class="meta">{html.escape(period_label)} · {len(questions)} questions</div>
   </header>
   {''.join(question_blocks)}
   <section class="answer-key">
@@ -539,9 +701,15 @@ def _questions_to_html(questions: list[dict], month_name: str, year: int) -> str
 </html>"""
 
 
-def render_questions_pdf(questions: list[dict], month_name: str, year: int, month: int) -> Path:
+def render_questions_pdf(
+    questions: list[dict],
+    month_name: str,
+    year: int | str | None,
+    month: int | None,
+    output_key: str | None = None,
+) -> Path:
     PDF_Q_DIR.mkdir(parents=True, exist_ok=True)
-    pdf_path = _question_pdf_path(year, month)
+    pdf_path = _question_pdf_path_for_key(output_key or _month_key(int(year), int(month)))
     html_content = _questions_to_html(questions, month_name, year)
 
     try:
@@ -574,9 +742,15 @@ def render_questions_pdf(questions: list[dict], month_name: str, year: int, mont
     return pdf_path
 
 
-def render_summary_pdf(summary_markdown: str, month_name: str, year: int, month: int) -> Path:
+def render_summary_pdf(
+    summary_markdown: str,
+    month_name: str,
+    year: int | str | None,
+    month: int | None,
+    output_key: str | None = None,
+) -> Path:
     SUMMARY_PDF_DIR.mkdir(parents=True, exist_ok=True)
-    pdf_path = _summary_pdf_path(year, month)
+    pdf_path = _summary_pdf_path_for_key(output_key or _month_key(int(year), int(month)))
     html_content = _summary_markdown_to_html(summary_markdown, month_name, year)
 
     try:
@@ -617,7 +791,13 @@ def parse_recipients(raw_recipients: str) -> list[str]:
     ]
 
 
-def send_pdf_email(pdf_paths: list[Path], recipients: list[str], month_name: str, year: int) -> None:
+def send_pdf_email(
+    pdf_paths: list[Path],
+    recipients: list[str],
+    month_name: str,
+    year: int | str | None,
+) -> None:
+    period_label = _period_display(month_name, year)
     smtp_host = os.getenv("SMTP_HOST", "")
     smtp_user = os.getenv("SMTP_USER", "")
     smtp_password = os.getenv("SMTP_PASSWORD", "")
@@ -651,11 +831,11 @@ def send_pdf_email(pdf_paths: list[Path], recipients: list[str], month_name: str
         )
 
     message = EmailMessage()
-    message["Subject"] = f"RBI Grade B GA Prep PDFs - {month_name} {year}"
+    message["Subject"] = f"RBI Grade B GA Prep PDFs - {period_label}"
     message["From"] = smtp_from
     message["To"] = ", ".join(recipients)
     message.set_content(
-        f"Attached are the RBI Grade B GA summary and practice MCQ PDFs for {month_name} {year}.\n"
+        f"Attached are the RBI Grade B GA summary and practice MCQ PDFs for {period_label}.\n"
     )
 
     for pdf_path in pdf_paths:
@@ -695,6 +875,25 @@ def email_existing_pdfs(day: int, raw_recipients: str) -> None:
 
     send_pdf_email([summary_pdf_path, questions_pdf_path], recipients, month_name, year)
     print(f"  Existing summary and questions PDFs emailed → {', '.join(recipients)}")
+
+
+def email_existing_week_pdfs(week: int, raw_recipients: str) -> None:
+    start_date, end_date = get_week_period(week)
+    period_name = f"Week {week} ({start_date:%d %b %Y} - {end_date:%d %b %Y})"
+    output_key = _period_key(start_date, end_date)
+    recipients = parse_recipients(raw_recipients)
+    summary_pdf_path = _summary_pdf_path_for_key(output_key)
+    questions_pdf_path = _question_pdf_path_for_key(output_key)
+    missing_paths = [
+        path for path in [summary_pdf_path, questions_pdf_path]
+        if not path.exists()
+    ]
+    if missing_paths:
+        missing = ", ".join(str(path) for path in missing_paths)
+        raise RuntimeError(f"Cannot email existing PDFs because these files are missing: {missing}")
+
+    send_pdf_email([summary_pdf_path, questions_pdf_path], recipients, period_name, None)
+    print(f"  Existing weekly summary and questions PDFs emailed → {', '.join(recipients)}")
 
 
 def _configured_ollama_models() -> list[str]:
@@ -804,16 +1003,22 @@ def call_ollama_with_fallback(prompt: str) -> str:
     raise RuntimeError(f"All Ollama models failed: {', '.join(models)}")
 
 
-def _chunk_notes_cache_dir(year: int, month: int) -> Path:
-    return CHUNK_NOTES_DIR / f"{year}-{month:02d}"
+def _chunk_notes_cache_dir(year: int | str, month: int | None, output_key: str | None = None) -> Path:
+    key = output_key or _month_key(int(year), int(month))
+    return CHUNK_NOTES_DIR / key
 
 
-def _chunk_notes_cache_path(year: int, month: int, index: int) -> Path:
-    return _chunk_notes_cache_dir(year, month) / f"chunk-{index:03d}.json"
+def _chunk_notes_cache_path(
+    year: int | str,
+    month: int | None,
+    index: int,
+    output_key: str | None = None,
+) -> Path:
+    return _chunk_notes_cache_dir(year, month, output_key) / f"chunk-{index:03d}.json"
 
 
-def _chunk_manifest_path(year: int, month: int) -> Path:
-    return _chunk_notes_cache_dir(year, month) / "manifest.json"
+def _chunk_manifest_path(year: int | str, month: int | None, output_key: str | None = None) -> Path:
+    return _chunk_notes_cache_dir(year, month, output_key) / "manifest.json"
 
 
 def _source_fingerprint(blocks: list[str]) -> str:
@@ -847,8 +1052,13 @@ def _save_chunk_note(path: Path, content_hash: str, notes: str) -> None:
     tmp_path.replace(path)
 
 
-def _load_chunk_manifest(year: int, month: int, source_hash: str) -> str | None:
-    path = _chunk_manifest_path(year, month)
+def _load_chunk_manifest(
+    year: int | str,
+    month: int | None,
+    source_hash: str,
+    output_key: str | None = None,
+) -> str | None:
+    path = _chunk_manifest_path(year, month, output_key)
     if not path.exists():
         return None
     try:
@@ -867,13 +1077,14 @@ def _load_chunk_manifest(year: int, month: int, source_hash: str) -> str | None:
 
 
 def _save_chunk_manifest(
-    year: int,
-    month: int,
+    year: int | str,
+    month: int | None,
     source_hash: str,
     combined_notes: str,
     chunk_count: int,
+    output_key: str | None = None,
 ) -> None:
-    path = _chunk_manifest_path(year, month)
+    path = _chunk_manifest_path(year, month, output_key)
     path.parent.mkdir(parents=True, exist_ok=True)
     tmp_path = path.with_suffix(".json.tmp")
     with open(tmp_path, "w", encoding="utf-8") as f:
@@ -892,11 +1103,18 @@ def _save_chunk_manifest(
     tmp_path.replace(path)
 
 
-def _chunk_summary_prompt(chunk: str, month_name: str, year: int, index: int, total: int) -> str:
+def _chunk_summary_prompt(
+    chunk: str,
+    month_name: str,
+    year: int | str | None,
+    index: int,
+    total: int,
+) -> str:
+    period_label = _period_display(month_name, year)
     return f"""\
 You are preparing RBI Grade B Phase 1 General Awareness notes from source material.
 
-This is chunk {index} of {total} for {month_name} {year}.
+This is chunk {index} of {total} for {period_label}.
 Extract only exam-relevant facts from the raw PIB/RBI material below.
 
 Output concise markdown notes, maximum {CHUNK_SUMMARY_WORDS} words.
@@ -920,13 +1138,14 @@ RAW CHUNK:
 def _summarize_large_content(
     blocks: list[str],
     month_name: str,
-    year: int,
-    month: int,
+    year: int | str | None,
+    month: int | None,
+    output_key: str | None = None,
 ) -> str:
     source_hash = _source_fingerprint(blocks)
-    cached_combined_notes = _load_chunk_manifest(year, month, source_hash)
+    cached_combined_notes = _load_chunk_manifest(year, month, source_hash, output_key)
     if cached_combined_notes:
-        print("  Loaded cached month-level chunk notes; skipping chunking.")
+        print("  Loaded cached period-level chunk notes; skipping chunking.")
         return cached_combined_notes
 
     chunks = _chunk_blocks(blocks, CHUNK_CONTENT_WORDS)
@@ -938,7 +1157,7 @@ def _summarize_large_content(
     notes = []
     for index, chunk in enumerate(chunks, 1):
         content_hash = hashlib.sha256(chunk.encode("utf-8")).hexdigest()
-        cache_path = _chunk_notes_cache_path(year, month, index)
+        cache_path = _chunk_notes_cache_path(year, month, index, output_key)
         cached_note = _load_chunk_note(cache_path, content_hash)
         if cached_note:
             print(f"    [{index}/{len(chunks)}] Loaded cached chunk notes")
@@ -956,7 +1175,7 @@ def _summarize_large_content(
     for index, note in enumerate(notes, 1):
         combined_notes.append(f"=== Condensed Notes: Chunk {index} ===\n\n{note}")
     result = "\n\n".join(combined_notes)
-    _save_chunk_manifest(year, month, source_hash, result, len(chunks))
+    _save_chunk_manifest(year, month, source_hash, result, len(chunks), output_key)
     return result
 
 
@@ -964,8 +1183,9 @@ def prepare_prompt_content(
     pib_releases: list[dict],
     rbi_items: list[dict],
     month_name: str,
-    year: int,
-    month: int,
+    year: int | str | None,
+    month: int | None,
+    output_key: str | None = None,
 ) -> str:
     usable_pib_count = len(_usable_detail_items(pib_releases))
     usable_rbi_count = len(_usable_detail_items(rbi_items))
@@ -990,7 +1210,7 @@ def prepare_prompt_content(
         print(f"  Combined content: {raw_words} words (budget: {final_budget})")
         return combined
 
-    summarized = _summarize_large_content(blocks, month_name, year, month)
+    summarized = _summarize_large_content(blocks, month_name, year, month, output_key)
     summarized_words = len(summarized.split())
     if summarized_words > final_budget:
         summarized = _truncate_to_words(summarized, final_budget)
@@ -1122,13 +1342,14 @@ def build_missing_questions_prompt(
     content: str,
     summary: str,
     month_name: str,
-    year: int,
+    year: int | str | None,
     start_number: int,
     end_number: int,
 ) -> str:
     missing_count = end_number - start_number + 1
+    period_label = _period_display(month_name, year)
     return f"""\
-You previously generated only {start_number - 1} of {EXPECTED_QUESTION_COUNT} RBI Grade B Phase 1 General Awareness MCQs for {month_name} {year}.
+You previously generated only {start_number - 1} of {EXPECTED_QUESTION_COUNT} RBI Grade B Phase 1 General Awareness MCQs for {period_label}.
 
 Generate ONLY the missing {missing_count} questions, numbered Q{start_number} through Q{end_number}.
 Do not repeat earlier questions. Do not write a summary or any explanation.
@@ -1138,14 +1359,14 @@ Rules:
 - Every question MUST have exactly one answer line immediately after the options.
 - Format every answer line exactly as: Answer: [letter]
 - Do not use markdown bold/italic formatting. No ** markers.
-- Base the questions only on the monthly summary and raw content below.
+- Base the questions only on the period summary and raw content below.
 
 Output format:
 Q{start_number}. [Question text]
 A. [option]  B. [option]  C. [option]  D. [option]  E. [option]
 Answer: [letter]
 
-MONTHLY SUMMARY:
+PERIOD SUMMARY:
 {summary}
 
 RAW CONTENT:
@@ -1158,8 +1379,9 @@ def complete_missing_questions(
     content: str,
     summary: str,
     month_name: str,
-    year: int,
-    month: int,
+    year: int | str | None,
+    month: int | None,
+    output_key: str | None = None,
 ) -> list[dict]:
     if len(questions) >= EXPECTED_QUESTION_COUNT:
         return questions
@@ -1178,7 +1400,9 @@ def complete_missing_questions(
         EXPECTED_QUESTION_COUNT,
     )
     continuation = call_ollama_with_fallback(continuation_prompt)
-    continuation_path = _save_raw_ollama_response(year, month, continuation, "continuation")
+    continuation_path = _save_raw_ollama_response(
+        year, month, continuation, "continuation", output_key
+    )
     print(f"  Raw Ollama continuation saved → {continuation_path}")
 
     extra_questions = parse_questions(continuation)
@@ -1193,9 +1417,183 @@ def complete_missing_questions(
 # Main pipeline
 # ---------------------------------------------------------------------------
 
+def _load_or_scrape_month(
+    year: int,
+    month: int,
+    refresh_cache: bool = False,
+) -> tuple[list[dict], list[dict]]:
+    pib_releases = None if refresh_cache else _load_scrape_cache("pib", year, month)
+    rbi_items = None if refresh_cache else _load_scrape_cache("rbi", year, month)
+    if refresh_cache:
+        print(f"  Refresh requested for {year}-{month:02d}; ignoring existing scrape cache.")
+
+    missing_sources = []
+    if pib_releases is None:
+        missing_sources.append("pib")
+    if rbi_items is None:
+        missing_sources.append("rbi")
+
+    if missing_sources:
+        from scrapers.pib_scraper import scrape_pib
+        from scrapers.rbi_scraper import scrape_rbi
+
+        scraper_map = {
+            "pib": scrape_pib,
+            "rbi": scrape_rbi,
+        }
+
+        with ThreadPoolExecutor(max_workers=len(missing_sources)) as executor:
+            future_to_source = {
+                executor.submit(scraper_map[source], year, month): source
+                for source in missing_sources
+            }
+
+            for future in as_completed(future_to_source):
+                source = future_to_source[future]
+                try:
+                    items = future.result()
+                    _save_scrape_cache(source, year, month, items)
+                except Exception as e:
+                    print(f"  [ERROR] {source.upper()} scraper: {e}")
+                    items = []
+
+                if source == "pib":
+                    pib_releases = items
+                else:
+                    rbi_items = items
+
+    return pib_releases or [], rbi_items or []
+
+
+def _load_weekly_source_from_month_cache(
+    source: str,
+    start_date: date,
+    end_date: date,
+) -> list[dict] | None:
+    items = []
+    for source_year, source_month in _months_in_range(start_date, end_date):
+        path = _scrape_cache_path(source, source_year, source_month)
+        if not path.exists():
+            return None
+        month_items = _load_scrape_cache(source, source_year, source_month)
+        if month_items is None:
+            return None
+        items.extend(month_items)
+
+    filtered = _filter_items_by_date(items, start_date, end_date)
+    print(f"  Built weekly {source.upper()} data from existing monthly cache: {len(filtered)} items")
+    return filtered
+
+
+def _load_or_scrape_week(
+    start_date: date,
+    end_date: date,
+    output_key: str,
+    refresh_cache: bool = False,
+) -> tuple[list[dict], list[dict]]:
+    pib_releases = None if refresh_cache else _load_period_scrape_cache("pib", output_key)
+    rbi_items = None if refresh_cache else _load_period_scrape_cache("rbi", output_key)
+    if refresh_cache:
+        print("  Refresh requested; ignoring existing weekly scrape cache.")
+
+    if pib_releases is None and not refresh_cache:
+        pib_releases = _load_weekly_source_from_month_cache("pib", start_date, end_date)
+        if pib_releases is not None:
+            _save_period_scrape_cache("pib", output_key, pib_releases)
+
+    if rbi_items is None and not refresh_cache:
+        rbi_items = _load_weekly_source_from_month_cache("rbi", start_date, end_date)
+        if rbi_items is not None:
+            _save_period_scrape_cache("rbi", output_key, rbi_items)
+
+    if pib_releases is None or rbi_items is None:
+        from scrapers.pib_scraper import scrape_pib_range
+        from scrapers.rbi_scraper import scrape_rbi_range
+
+        scraper_map = {
+            "pib": scrape_pib_range,
+            "rbi": scrape_rbi_range,
+        }
+        missing_sources = []
+        if pib_releases is None:
+            missing_sources.append("pib")
+        if rbi_items is None:
+            missing_sources.append("rbi")
+
+        with ThreadPoolExecutor(max_workers=len(missing_sources)) as executor:
+            future_to_source = {
+                executor.submit(scraper_map[source], start_date, end_date): source
+                for source in missing_sources
+            }
+            for future in as_completed(future_to_source):
+                source = future_to_source[future]
+                try:
+                    items = future.result()
+                    _save_period_scrape_cache(source, output_key, items)
+                except Exception as e:
+                    print(f"  [ERROR] weekly {source.upper()} scraper: {e}")
+                    items = []
+
+                if source == "pib":
+                    pib_releases = items
+                else:
+                    rbi_items = items
+
+    return pib_releases or [], rbi_items or []
+
+
+def _save_outputs(
+    summary: str,
+    questions: list[dict],
+    period_name: str,
+    year: int | str | None,
+    month: int | None,
+    output_key: str,
+    generated_label: str,
+    email_to: str | None,
+) -> tuple[Path, Path, Path, Path]:
+    SUMMARIES_DIR.mkdir(parents=True, exist_ok=True)
+    GEN_Q_DIR.mkdir(parents=True, exist_ok=True)
+
+    period_label = _period_display(period_name, year)
+    summary_path = SUMMARIES_DIR / f"{output_key}.md"
+    summary_document = (
+        f"# RBI Grade B GA Summary — {period_label}\n\n"
+        f"_Generated on: {generated_label}_\n\n"
+        f"{summary}"
+    )
+    with open(summary_path, "w", encoding="utf-8") as f:
+        f.write(summary_document)
+    print(f"  Summary saved → {summary_path}")
+
+    summary_pdf_path = render_summary_pdf(
+        summary_document,
+        period_name,
+        year,
+        month,
+        output_key,
+    )
+    print(f"  Summary PDF saved → {summary_pdf_path}")
+
+    questions_path = GEN_Q_DIR / f"{output_key}-qs.json"
+    with open(questions_path, "w", encoding="utf-8") as f:
+        json.dump(questions, f, indent=2)
+    print(f"  Questions saved → {questions_path} ({len(questions)} MCQs)")
+
+    questions_pdf_path = render_questions_pdf(questions, period_name, year, month, output_key)
+    print(f"  Questions PDF saved → {questions_pdf_path}")
+
+    recipients = parse_recipients(email_to or "")
+    if recipients:
+        send_pdf_email([summary_pdf_path, questions_pdf_path], recipients, period_name, year)
+        print(f"  Summary and questions PDFs emailed → {', '.join(recipients)}")
+
+    return summary_path, summary_pdf_path, questions_path, questions_pdf_path
+
+
 def run_day(day: int, refresh_cache: bool = False, email_to: str | None = None) -> None:
     if day not in DAY_MAP:
-        print(f"[ERROR] Day {day} not in DAY_MAP (valid: 1-12).")
+        print(f"[ERROR] Day {day} not in DAY_MAP (valid: {sorted(DAY_MAP)}).")
         sys.exit(1)
 
     year, month = DAY_MAP[day]
@@ -1329,15 +1727,114 @@ def run_day(day: int, refresh_cache: bool = False, email_to: str | None = None) 
     print(f"{'='*60}")
 
 
+def run_week(week: int, refresh_cache: bool = False, email_to: str | None = None) -> None:
+    start_date, end_date = get_week_period(week)
+    period_name = f"Week {week} ({start_date:%d %b %Y} - {end_date:%d %b %Y})"
+    output_key = _period_key(start_date, end_date)
+
+    print("=" * 60)
+    print(f"Weekly Runner — Week {week} → {start_date:%d %b %Y} to {end_date:%d %b %Y}")
+    print("=" * 60)
+
+    t_start = time.time()
+
+    print("\n[Step 1] Loading weekly scrape cache / scraping missing week ...")
+    t1 = time.time()
+
+    pib_releases, rbi_items = _load_or_scrape_week(
+        start_date,
+        end_date,
+        output_key,
+        refresh_cache,
+    )
+
+    print(
+        f"  PIB: {len(pib_releases)} weekly releases | "
+        f"RBI: {len(rbi_items)} weekly items  ({time.time()-t1:.1f}s)"
+    )
+
+    print("\n[Step 2] Preparing weekly prompt content ...")
+    if not pib_releases and not rbi_items:
+        raise RuntimeError(
+            f"No PIB/RBI items found for Week {week} "
+            f"({start_date:%Y-%m-%d} to {end_date:%Y-%m-%d})."
+        )
+    if pib_releases:
+        _validate_detail_content("pib", pib_releases)
+    else:
+        print("  [WARN] No PIB items found for this week.")
+    if rbi_items:
+        _validate_detail_content("rbi", rbi_items)
+    else:
+        print("  [WARN] No RBI items found for this week.")
+    combined = prepare_prompt_content(
+        pib_releases,
+        rbi_items,
+        period_name,
+        None,
+        None,
+        output_key,
+    )
+
+    print("\n[Step 3] Building prompt & calling Ollama ...")
+    t3 = time.time()
+    prompt = build_prompt(combined, period_name)
+
+    response = call_ollama_with_fallback(prompt)
+    print(f"  Ollama response: {len(response)} chars  ({time.time()-t3:.1f}s)")
+    raw_response_path = _save_raw_ollama_response(None, None, response, output_key=output_key)
+    print(f"  Raw Ollama response saved → {raw_response_path}")
+
+    print("\n[Step 4] Parsing response ...")
+    summary, questions_raw = split_response(response)
+    summary = clean_summary_markdown(summary)
+    questions = parse_questions(questions_raw)
+    questions = complete_missing_questions(
+        questions,
+        combined,
+        summary,
+        period_name,
+        None,
+        None,
+        output_key,
+    )
+    questions = normalize_questions(questions)
+    print(f"  Summary: {len(summary)} chars | Questions parsed: {len(questions)}")
+
+    print("\n[Step 5] Saving outputs ...")
+    _summary_path, summary_pdf_path, _questions_path, questions_pdf_path = _save_outputs(
+        summary,
+        questions,
+        period_name,
+        None,
+        None,
+        output_key,
+        f"Week {week} pipeline",
+        email_to,
+    )
+
+    t_total = time.time() - t_start
+    print(f"\n{'='*60}")
+    print(f"Week {week} complete in {t_total:.1f}s | {start_date:%d %b %Y} to {end_date:%d %b %Y}")
+    print(f"  PIB releases   : {len(pib_releases)}")
+    print(f"  RBI items      : {len(rbi_items)}")
+    print(f"  Questions gen  : {len(questions)}")
+    print(f"  Summary PDF    : {summary_pdf_path}")
+    print(f"  Questions PDF  : {questions_pdf_path}")
+    print(f"{'='*60}")
+
+
 if __name__ == "__main__":
     parser = argparse.ArgumentParser(
         description="Daily pipeline runner for RBI Grade B prep"
     )
-    parser.add_argument("--day", type=int, required=True, help="Day number 1-12")
+    period_group = parser.add_mutually_exclusive_group(required=True)
+    period_group.add_argument("--day", type=int, help="Day number from DAY_MAP for monthly runs")
+    period_group.add_argument("--week", type=int, help="Week number for weekly runs")
     parser.add_argument(
         "--refresh-cache",
         action="store_true",
-        help="Ignore cached PIB/RBI scrape data and scrape the month again",
+        help="Ignore cached PIB/RBI scrape data and scrape source month(s) again",
     )
     parser.add_argument(
         "--email-to",
@@ -1347,10 +1844,15 @@ if __name__ == "__main__":
     parser.add_argument(
         "--email-existing",
         action="store_true",
-        help="Email already-generated summary/question PDFs for the day without running the pipeline",
+        help="Email already-generated summary/question PDFs without running the pipeline",
     )
     args = parser.parse_args()
     if args.email_existing:
-        email_existing_pdfs(args.day, args.email_to)
+        if args.week is not None:
+            email_existing_week_pdfs(args.week, args.email_to)
+        else:
+            email_existing_pdfs(args.day, args.email_to)
+    elif args.week is not None:
+        run_week(args.week, refresh_cache=args.refresh_cache, email_to=args.email_to or None)
     else:
         run_day(args.day, refresh_cache=args.refresh_cache, email_to=args.email_to or None)

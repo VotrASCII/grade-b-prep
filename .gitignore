@@ -5,12 +5,12 @@
 __pycache__/
 *.pyc
 data/*
-!data/patterns/
-!data/questions/
-data/questions/*
-!data/questions/pdf/
-!data/questions/pdf/**
-!data/summaries/
-data/summaries/*
-!data/summaries/pdf/
-!data/summaries/pdf/**
+# !data/patterns/
+# !data/questions/
+# data/questions/*
+# !data/questions/pdf/
+# !data/questions/pdf/**
+# !data/summaries/
+# data/summaries/*
+# !data/summaries/pdf/
+# !data/summaries/pdf/**

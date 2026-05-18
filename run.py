@@ -1,24 +1,26 @@
 """
 Module 5 — Scheduler
-Manages state and schedules daily pipeline runs at 3:00 PM.
+Manages state and schedules weekly pipeline runs every 6 hours.
 Usage:
   python run.py           # auto-scheduled mode
-  python run.py --run-now # immediately process today's day
+  python run.py --run-now # immediately process the current weekly slot
 """
 
 import argparse
 import json
 import subprocess
 import sys
-from datetime import datetime
+from datetime import date, datetime
 from pathlib import Path
 
 import schedule
 import time as time_mod
 
+from config import SCHEDULER_INTERVAL_HOURS
+from pipeline.daily_runner import get_week_period, total_configured_weeks
+
 BASE_DIR = Path(__file__).resolve().parent
 STATE_FILE = BASE_DIR / "data" / "state.json"
-TOTAL_DAYS = 12
 
 # Ensure data dir exists
 (BASE_DIR / "data").mkdir(parents=True, exist_ok=True)
@@ -28,7 +30,7 @@ def _load_state() -> dict:
     if STATE_FILE.exists():
         with open(STATE_FILE) as f:
             return json.load(f)
-    return {"current_day": 1}
+    return {"current_week": 1}
 
 
 def _save_state(state: dict) -> None:
@@ -36,37 +38,54 @@ def _save_state(state: dict) -> None:
         json.dump(state, f, indent=2)
 
 
-def _run_day(day: int) -> None:
-    print(f"\n[{datetime.now().strftime('%Y-%m-%d %H:%M:%S')}] Running Day {day} ...")
+def _run_week(week: int) -> None:
+    start_date, end_date = get_week_period(week)
+    print(
+        f"\n[{datetime.now().strftime('%Y-%m-%d %H:%M:%S')}] "
+        f"Running Week {week}: {start_date:%Y-%m-%d} to {end_date:%Y-%m-%d} ..."
+    )
     result = subprocess.run(
-        [sys.executable, str(BASE_DIR / "pipeline" / "daily_runner.py"), "--day", str(day)],
+        [sys.executable, str(BASE_DIR / "pipeline" / "daily_runner.py"), "--week", str(week)],
         cwd=str(BASE_DIR),
     )
     if result.returncode != 0:
         print(f"  [ERROR] daily_runner.py exited with code {result.returncode}")
     else:
-        print(f"  Day {day} complete.")
+        print(f"  Week {week} complete.")
 
 
-def run_current_day() -> bool:
-    """Run the current day, increment state. Returns True if more days remain."""
+def run_current_week() -> bool:
+    """Run the current weekly period, then increment state if it completed."""
     state = _load_state()
-    day = state.get("current_day", 1)
+    week = state.get("current_week", 1)
+    total_weeks = total_configured_weeks()
 
-    if day > TOTAL_DAYS:
-        print("All 12 months processed. Happy studying! 🎉")
+    if week > total_weeks:
+        print("All configured weekly periods processed.")
         return False
 
-    _run_day(day)
+    start_date, end_date = get_week_period(week)
+    if end_date > date.today():
+        print(
+            f"Week {week} ({start_date:%Y-%m-%d} to {end_date:%Y-%m-%d}) "
+            "is not complete yet. Waiting for the next scheduler tick."
+        )
+        return True
 
-    state["current_day"] = day + 1
+    _run_week(week)
+
+    state["current_week"] = week + 1
     _save_state(state)
 
-    if state["current_day"] > TOTAL_DAYS:
-        print("\nAll 12 months processed. Happy studying! 🎉")
+    if state["current_week"] > total_weeks:
+        print("\nAll configured weekly periods processed.")
         return False
 
-    print(f"  Next scheduled run: Day {state['current_day']} (tomorrow at 3:00 PM)")
+    next_start, next_end = get_week_period(state["current_week"])
+    print(
+        f"  Next scheduled run: Week {state['current_week']} "
+        f"({next_start:%Y-%m-%d} to {next_end:%Y-%m-%d})"
+    )
     return True
 
 
@@ -75,35 +94,37 @@ def main() -> None:
     parser.add_argument(
         "--run-now",
         action="store_true",
-        help="Skip the scheduler and immediately run today's day",
+        help="Skip the scheduler and immediately run the current weekly period",
     )
     args = parser.parse_args()
 
     if args.run_now:
-        run_current_day()
+        run_current_week()
         return
 
-    # Auto-scheduled mode: run immediately once, then schedule future runs at 3 PM
+    # Auto-scheduled mode: run immediately once, then schedule every N hours.
     state = _load_state()
-    if state.get("current_day", 1) > TOTAL_DAYS:
-        print("All 12 months processed. Happy studying! 🎉")
+    if state.get("current_week", 1) > total_configured_weeks():
+        print("All configured weekly periods processed.")
         return
 
-    print("RBI Grade B Prep — Auto Scheduler")
+    print("RBI Grade B Prep - Weekly Auto Scheduler")
     print(f"State: {state}")
-    print("Running today's day immediately, then scheduling at 3:00 PM daily...")
+    print(
+        "Running the current weekly period immediately, then scheduling "
+        f"every {SCHEDULER_INTERVAL_HOURS} hours..."
+    )
 
-    more = run_current_day()
+    more = run_current_week()
     if not more:
         return
 
     def scheduled_job() -> None:
-        still_more = run_current_day()
+        still_more = run_current_week()
         if not still_more:
-            # Cancel the recurring job once complete
             return schedule.CancelJob
 
-    schedule.every().day.at("15:00").do(scheduled_job)
+    schedule.every(SCHEDULER_INTERVAL_HOURS).hours.do(scheduled_job)
 
     print("Scheduler active. Press Ctrl+C to exit.")
     while True:

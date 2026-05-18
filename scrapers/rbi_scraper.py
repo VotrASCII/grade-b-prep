@@ -8,6 +8,7 @@ import asyncio
 import re
 import sys
 import time
+from datetime import date, datetime
 from pathlib import Path
 from urllib.parse import urljoin
 
@@ -34,6 +35,46 @@ MONTH_NAMES = {
     5: "May", 6: "June", 7: "July", 8: "August",
     9: "September", 10: "October", 11: "November", 12: "December",
 }
+
+SOURCE_DATE_FORMATS = (
+    "%Y-%m-%d",
+    "%b %d, %Y",
+    "%B %d, %Y",
+    "%d %b %Y",
+    "%d %B %Y",
+)
+
+
+def _parse_rbi_date(raw_date: str) -> "date | None":
+    raw_date = (raw_date or "").strip()
+    for fmt in SOURCE_DATE_FORMATS:
+        try:
+            return datetime.strptime(raw_date, fmt).date()
+        except ValueError:
+            pass
+    return None
+
+
+def _in_date_range(item: dict, start_date: "date | None", end_date: "date | None") -> bool:
+    if start_date is None or end_date is None:
+        return True
+    item_date = _parse_rbi_date(item.get("date", ""))
+    return item_date is not None and start_date <= item_date <= end_date
+
+
+def _filter_items_by_date(
+    items: list[dict],
+    start_date: "date | None",
+    end_date: "date | None",
+    source_name: str,
+) -> list[dict]:
+    if start_date is None or end_date is None:
+        return items
+    filtered = [item for item in items if _in_date_range(item, start_date, end_date)]
+    skipped = len(items) - len(filtered)
+    if skipped:
+        print(f"  Skipped {skipped} {source_name} rows outside {start_date} to {end_date}.")
+    return filtered
 
 
 def _get(url: str, timeout: int = 20) -> "requests.Response | None":
@@ -161,15 +202,26 @@ async def _scrape_circulars_playwright(year: int, month: int) -> list[dict]:
     return results
 
 
-def scrape_rbi_circulars(year: int, month: int) -> list[dict]:
-    return asyncio.run(_scrape_circulars_playwright(year, month))
+def scrape_rbi_circulars(
+    year: int,
+    month: int,
+    start_date: "date | None" = None,
+    end_date: "date | None" = None,
+) -> list[dict]:
+    items = asyncio.run(_scrape_circulars_playwright(year, month))
+    return _filter_items_by_date(items, start_date, end_date, "RBI circular")
 
 
 # ---------------------------------------------------------------------------
 # HTTP-based press release scraper
 # ---------------------------------------------------------------------------
 
-def scrape_rbi_press_releases(year: int, month: int) -> list[dict]:
+def scrape_rbi_press_releases(
+    year: int,
+    month: int,
+    start_date: "date | None" = None,
+    end_date: "date | None" = None,
+) -> list[dict]:
     print(f"  Fetching RBI press releases for {year}-{month:02d} ...")
     results = []
 
@@ -221,14 +273,16 @@ def scrape_rbi_press_releases(year: int, month: int) -> list[dict]:
             subject = cells[0].get_text(strip=True)
             href = link.get("href", "")
             url = _normalise_rbi_url(href)
-            results.append({
+            item = {
                 "circular_number": "",
                 "date": current_date,
                 "department": "Press Release",
                 "subject": subject,
                 "url": url,
                 "type": "press_release",
-            })
+            }
+            if _in_date_range(item, start_date, end_date):
+                results.append(item)
 
     print(f"  RBI press releases: {len(results)} found.")
     return results
@@ -238,10 +292,17 @@ def scrape_rbi_press_releases(year: int, month: int) -> list[dict]:
 # Public entry point
 # ---------------------------------------------------------------------------
 
-def scrape_rbi(year: int, month: int) -> list[dict]:
+def scrape_rbi(
+    year: int,
+    month: int,
+    start_date: "date | None" = None,
+    end_date: "date | None" = None,
+) -> list[dict]:
     """Scrape and merge RBI circulars + press releases for the given month."""
-    circulars = scrape_rbi_circulars(year, month)
-    press = scrape_rbi_press_releases(year, month)
+    if start_date and end_date:
+        print(f"  Fetching RBI items for {start_date} to {end_date} ...")
+    circulars = scrape_rbi_circulars(year, month, start_date, end_date)
+    press = scrape_rbi_press_releases(year, month, start_date, end_date)
 
     seen_urls: set[str] = set()
     merged = []
@@ -255,6 +316,19 @@ def scrape_rbi(year: int, month: int) -> list[dict]:
 
     print(f"  RBI total (merged): {len(merged)} items for {year}-{month:02d}.")
     return merged
+
+
+def scrape_rbi_range(start_date: date, end_date: date) -> list[dict]:
+    results = []
+    cursor = date(start_date.year, start_date.month, 1)
+    last = date(end_date.year, end_date.month, 1)
+    while cursor <= last:
+        month_start = max(start_date, cursor)
+        next_month = date(cursor.year + 1, 1, 1) if cursor.month == 12 else date(cursor.year, cursor.month + 1, 1)
+        month_end = min(end_date, next_month - date.resolution)
+        results.extend(scrape_rbi(cursor.year, cursor.month, month_start, month_end))
+        cursor = next_month
+    return results
 
 
 if __name__ == "__main__":
