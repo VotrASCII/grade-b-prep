@@ -45,6 +45,50 @@ RBI_PRESS_URL = (
     "https://www.rbi.org.in/Scripts/BS_PressReleaseDisplay.aspx"
 )
 
+# ── News pipeline (RSS-based) ──────────────────────────────────────────────
+# Only RSS metadata (headline, link, date, short summary) is ingested — never
+# full copyrighted article bodies. Business Standard is excluded: it blocks
+# automated access (Akamai 403) and is hard-paywalled.
+NEWS_FEEDS = {
+    "Economic Times": [
+        "https://economictimes.indiatimes.com/news/economy/rssfeeds/1373380680.cms",
+        "https://economictimes.indiatimes.com/markets/rssfeeds/1977021501.cms",
+        "https://economictimes.indiatimes.com/industry/banking/finance/banking/rssfeeds/13358259.cms",
+    ],
+    "Mint": [
+        "https://www.livemint.com/rss/economy",
+        "https://www.livemint.com/rss/money",
+        "https://www.livemint.com/rss/markets",
+    ],
+    "Hindustan Times": [
+        "https://www.hindustantimes.com/feeds/rss/business/rssfeed.xml",
+    ],
+}
+
+# Exams each news item is screened against, with keyword hints used for the
+# heuristic fallback tagger (the LLM refines these when Ollama is available).
+NEWS_EXAMS = {
+    "RBI Grade B": [
+        "rbi", "monetary policy", "repo rate", "inflation", "cpi", "wpi", "gdp",
+        "bank", "npa", "liquidity", "rupee", "forex", "mpc", "basel", "credit",
+    ],
+    "SEBI Grade A": [
+        "sebi", "stock market", "sensex", "nifty", "ipo", "mutual fund",
+        "capital market", "securities", "demat", "fpi", "fii", "bond",
+    ],
+    "NABARD Grade A": [
+        "agriculture", "rural", "farmer", "crop", "msme", "cooperative",
+        "priority sector", "kisan", "nabard", "irrigation", "agri",
+    ],
+    "UPSC / Banking": [
+        "economy", "budget", "scheme", "gst", "trade", "export", "import",
+        "fiscal", "subsidy", "policy", "government", "ministry", "world bank",
+    ],
+}
+# How many days back to include in a news digest, and the cap per source.
+NEWS_LOOKBACK_DAYS = 7
+NEWS_MAX_PER_SOURCE = 40
+
 FUZZY_THRESHOLD = 0.85
 MAX_CONTENT_WORDS = 45_000
 CHUNK_CONTENT_WORDS = 12_000

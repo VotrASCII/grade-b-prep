@@ -11,6 +11,7 @@ Automated scraper and AI study assistant for RBI Grade B Phase 1 General Awarene
 3. **Generates AI summaries + practice MCQs** for weekly or monthly periods using Ollama
 4. **Schedules itself** to process one completed week every 6 hours
 5. **Publishes a minimalist weekly website** ([live here](https://votrascii.github.io/grade-b-prep/)) with descriptive summaries and an in-browser practice quiz
+6. **Curates exam-relevant news** from ET / Mint / Hindustan Times (via RSS), tagged by exam and cited back to the source
 
 ## Setup
 
@@ -186,6 +187,43 @@ To email already-generated PDFs without rerunning scraping or Ollama:
 python pipeline/daily_runner.py --week 1 --email-existing
 python pipeline/daily_runner.py --week 1 --email-existing --email-to "one@example.com,two@example.com"
 ```
+
+## News pipeline (In the news)
+
+A second, parallel pipeline ingests **exam-relevant business/economy news** and
+publishes it as an "In the news" page on the site, with cited sources and per-exam
+relevance tags.
+
+- **Sources:** Economic Times, Mint, Hindustan Times — read via their public **RSS
+  feeds**. Business Standard is excluded (it blocks automated access and is hard
+  paywalled).
+- **What is stored:** only RSS metadata — headline, source, date, link, and a short
+  summary. Full copyrighted article bodies are **never** scraped or republished;
+  every item links back to and cites the original.
+- **Exam tagging:** each item is screened for relevance to **RBI Grade B, SEBI
+  Grade A, NABARD Grade A, and UPSC / Banking**, with a one-line "why it matters"
+  note. A keyword heuristic provides the baseline; **Ollama** refines the tags,
+  topic, and note when it is reachable.
+
+Run it:
+
+```bash
+python pipeline/news_runner.py            # fetch, tag (LLM if available), save
+python pipeline/news_runner.py --no-llm   # heuristic tagging only (fast, no Ollama)
+python pipeline/news_runner.py --days 14  # widen the lookback window
+```
+
+Output:
+
+| Path | Contents |
+|------|----------|
+| `data/news/latest.json` | Current digest consumed by the site build |
+| `data/news/YYYY-MM-DD.json` | Dated snapshot for history |
+
+The site build renders `data/news/latest.json` into `docs/news.html` (filterable by
+exam). `run.py` refreshes the news digest automatically after each weekly cycle; use
+`python run.py --build-only --with-news` to refresh it on demand. Configure feeds,
+exams, and lookback in `config.py` (`NEWS_FEEDS`, `NEWS_EXAMS`, `NEWS_LOOKBACK_DAYS`).
 
 ## Website
 

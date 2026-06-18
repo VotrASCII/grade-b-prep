@@ -40,8 +40,21 @@ def _save_state(state: dict) -> None:
         json.dump(state, f, indent=2)
 
 
-def _rebuild_site(publish: bool = False) -> None:
+def _refresh_news() -> None:
+    """Best-effort refresh of the news digest (RSS + exam tagging)."""
+    news_runner = BASE_DIR / "pipeline" / "news_runner.py"
+    if not news_runner.exists():
+        return
+    print("  Refreshing news digest ...")
+    result = subprocess.run([sys.executable, str(news_runner)], cwd=str(BASE_DIR))
+    if result.returncode != 0:
+        print(f"  [WARN] News refresh exited with code {result.returncode}")
+
+
+def _rebuild_site(publish: bool = False, refresh_news: bool = False) -> None:
     """Regenerate the static site in docs/ and optionally commit & push it."""
+    if refresh_news:
+        _refresh_news()
     build_script = BASE_DIR / "scripts" / "build_site.py"
     if not build_script.exists():
         return
@@ -123,7 +136,8 @@ def run_current_week(publish: bool = False) -> bool:
     _save_state(state)
 
     # Rebuild the published site after each completed week so new content goes live.
-    _rebuild_site(publish=publish)
+    # Also refresh the news digest so the site's "In the news" page stays current.
+    _rebuild_site(publish=publish, refresh_news=True)
 
     if state["current_week"] > total_weeks:
         if OPEN_ENDED_SCHEDULE:
@@ -157,10 +171,15 @@ def main() -> None:
         action="store_true",
         help="Just rebuild the static site from existing data and exit",
     )
+    parser.add_argument(
+        "--with-news",
+        action="store_true",
+        help="Also refresh the news digest (RSS + exam tagging) before building",
+    )
     args = parser.parse_args()
 
     if args.build_only:
-        _rebuild_site(publish=args.publish)
+        _rebuild_site(publish=args.publish, refresh_news=args.with_news)
         return
 
     if args.run_now:

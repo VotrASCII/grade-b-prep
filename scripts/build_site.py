@@ -24,6 +24,7 @@ from pathlib import Path
 BASE_DIR = Path(__file__).resolve().parent.parent
 SUMMARIES_DIR = BASE_DIR / "data" / "summaries"
 GEN_Q_DIR = BASE_DIR / "data" / "questions" / "generated"
+NEWS_DIR = BASE_DIR / "data" / "news"
 DOCS_DIR = BASE_DIR / "docs"
 ASSETS_DIR = DOCS_DIR / "assets"
 WEEKS_DIR = DOCS_DIR / "weeks"
@@ -271,6 +272,7 @@ def _nav(root: str) -> str:
   <a class="brand" href="{root}index.html">RBI<span class="brand-dot">·</span>GA</a>
   <nav class="nav-links">
     <a href="{root}index.html#index">Weeks</a>
+    <a href="{root}news.html">News</a>
     <a href="{root}index.html#about">About</a>
   </nav>
 </header>"""
@@ -473,6 +475,115 @@ def render_week(week: Week, prev_w: Week | None, next_w: Week | None) -> str:
 
 
 # ---------------------------------------------------------------------------
+# News digest page
+# ---------------------------------------------------------------------------
+
+EXAM_ABBR = {
+    "RBI Grade B": "RBI-B",
+    "SEBI Grade A": "SEBI-A",
+    "NABARD Grade A": "NABARD-A",
+    "UPSC / Banking": "UPSC/Bank",
+}
+
+
+def load_news() -> dict | None:
+    path = NEWS_DIR / "latest.json"
+    if not path.exists():
+        return None
+    try:
+        data = json.loads(path.read_text(encoding="utf-8"))
+    except json.JSONDecodeError:
+        return None
+    if not isinstance(data, dict) or not data.get("items"):
+        return None
+    return data
+
+
+def _fmt_news_date(raw: str | None) -> str:
+    if not raw:
+        return "—"
+    try:
+        d = datetime.strptime(raw, "%Y-%m-%d").date()
+        return f"{d.day:02d} {MONTHS[d.month]}"
+    except ValueError:
+        return raw
+
+
+def _exam_chip(exam: str) -> str:
+    abbr = EXAM_ABBR.get(exam, exam)
+    return f'<span class="chip" data-exam="{_escape(exam)}">{_escape(abbr)}</span>'
+
+
+def _news_card(item: dict) -> str:
+    exams = item.get("exams") or []
+    exam_attr = "|".join(exams)
+    chips = "".join(_exam_chip(e) for e in exams)
+    url = _escape(item.get("url", "#"))
+    return f"""
+      <article class="news-card reveal" data-exams="{_escape(exam_attr)}">
+        <div class="nc-meta">
+          <span class="nc-date">{_fmt_news_date(item.get('date'))}</span>
+          <span class="nc-source">{_escape(item.get('source', ''))}</span>
+          <span class="nc-topic">{_escape(item.get('topic', ''))}</span>
+        </div>
+        <h3 class="nc-title"><a href="{url}" target="_blank" rel="noopener nofollow">{_escape(item.get('title', ''))}</a></h3>
+        <p class="nc-rel">{_escape(item.get('relevance', ''))}</p>
+        <div class="nc-foot">
+          <div class="nc-chips">{chips}</div>
+          <a class="nc-read" href="{url}" target="_blank" rel="noopener nofollow">Read at {_escape(item.get('source', 'source'))} ↗</a>
+        </div>
+      </article>"""
+
+
+def render_news(news: dict) -> str:
+    items = news.get("items", [])
+    exams = news.get("exams", list(EXAM_ABBR.keys()))
+    sources = news.get("sources", [])
+    generated = news.get("generated", "")[:10]
+
+    filters = '<button class="filter active" data-exam="all" type="button">All</button>'
+    filters += "".join(
+        f'<button class="filter" data-exam="{_escape(e)}" type="button">{_escape(e)}</button>'
+        for e in exams
+    )
+
+    cards = "".join(_news_card(it) for it in items)
+
+    head = _head(
+        f"In the news — {SITE_TITLE}",
+        "",
+        "Exam-relevant business & economy news, cited and tagged by exam.",
+    )
+    return f"""{head}
+<body class="news-page">
+{_nav("")}
+<main>
+  <section class="hero hero-tight">
+    <p class="eyebrow reveal">Current affairs · cited sources</p>
+    <h1 class="display reveal">In the<br><em>news</em>.</h1>
+    <p class="lede reveal">Business &amp; economy headlines from the Economic Times, Mint and
+    Hindustan Times — each tagged with the exams it matters for and linked back to the
+    original. Only headlines and short summaries are shown; follow the link to read in full.</p>
+    <div class="hero-meta reveal">
+      <span><b>{len(items)}</b> items</span>
+      <span>{_escape(', '.join(sources))}</span>
+      <span class="hero-latest">Updated {_escape(generated)}</span>
+    </div>
+  </section>
+
+  <section class="news">
+    <div class="news-filters reveal" id="news-filters">{filters}</div>
+    <div class="news-list" id="news-list">{cards}
+    </div>
+    <p class="news-disclaimer reveal">Headlines and summaries are sourced from the publishers'
+    public RSS feeds and remain the copyright of their respective outlets. This page links to
+    the originals and does not reproduce full articles.</p>
+  </section>
+</main>
+{_footer("")}"""
+
+
+# ---------------------------------------------------------------------------
 # Build
 # ---------------------------------------------------------------------------
 
@@ -498,12 +609,20 @@ def build() -> None:
         page = render_week(week, prev_w=older, next_w=newer)
         (WEEKS_DIR / f"{week.slug}.html").write_text(page, encoding="utf-8")
 
+    news = load_news()
+    if news:
+        (DOCS_DIR / "news.html").write_text(render_news(news), encoding="utf-8")
+
     write_assets()
     (DOCS_DIR / ".nojekyll").write_text("", encoding="utf-8")
 
     print(f"Built {len(weeks)} week pages + index → {DOCS_DIR.relative_to(BASE_DIR)}")
     print(f"  Latest: {weeks[0].label} ({weeks[0].date_range})")
     print(f"  Practice questions: {sum(len(w.questions) for w in weeks):,}")
+    if news:
+        print(f"  News digest: {news['count']} items → docs/news.html")
+    else:
+        print("  News digest: none found (run pipeline/news_runner.py) — news.html skipped")
 
 
 def write_assets() -> None:

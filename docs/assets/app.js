@@ -24,6 +24,25 @@
     window.addEventListener('scroll', onScroll, { passive: true });
   }
 
+  // News exam filter
+  const filterBar = document.getElementById('news-filters');
+  const newsList = document.getElementById('news-list');
+  if (filterBar && newsList) {
+    const cards = Array.from(newsList.querySelectorAll('.news-card'));
+    filterBar.addEventListener('click', (e) => {
+      const btn = e.target.closest('.filter');
+      if (!btn) return;
+      filterBar.querySelectorAll('.filter').forEach((b) => b.classList.remove('active'));
+      btn.classList.add('active');
+      const exam = btn.dataset.exam;
+      cards.forEach((c) => {
+        const exams = (c.dataset.exams || '').split('|');
+        const show = exam === 'all' || exams.includes(exam);
+        c.classList.toggle('hidden', !show);
+      });
+    });
+  }
+
   // Quiz
   const dataEl = document.getElementById('quiz-data');
   const wrap = document.getElementById('quiz-questions');
