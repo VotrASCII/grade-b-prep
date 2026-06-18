@@ -2,12 +2,15 @@
 
 Automated scraper and AI study assistant for RBI Grade B Phase 1 General Awareness.
 
+**Live site:** https://votrascii.github.io/grade-b-prep/
+
 ## What it does
 
 1. **Scrapes past GA questions** (2023–2025) from EduTap, AffairsCloud, and Oliveboard
 2. **Scrapes PIB press releases** and **RBI circulars** with local caching
 3. **Generates AI summaries + practice MCQs** for weekly or monthly periods using Ollama
 4. **Schedules itself** to process one completed week every 6 hours
+5. **Publishes a minimalist weekly website** ([live here](https://votrascii.github.io/grade-b-prep/)) with descriptive summaries and an in-browser practice quiz
 
 ## Setup
 
@@ -223,12 +226,26 @@ python run.py --run-now --publish  # process the current week now, then push
 Raw scraped content in `data/` stays gitignored (private); only the rendered `docs/`
 site is committed.
 
-### One-time GitHub Pages setup
+### Hosting (GitHub Pages)
 
-In the repo on GitHub: **Settings → Pages → Build and deployment → Source:
-GitHub Actions**. The included `.github/workflows/pages.yml` then deploys `docs/`
-on every push that touches it. The site goes live at
-`https://<user>.github.io/grade-b-prep/`.
+The site is already live at **https://votrascii.github.io/grade-b-prep/**, served by
+GitHub Pages from `docs/`. The included `.github/workflows/pages.yml` redeploys it
+automatically on every push that touches `docs/` (typically `run.py --publish`).
+
+Pages is configured with **Source: GitHub Actions** (`build_type: workflow`). This
+was a one-time setup; you only need to redo it if you recreate the repo:
+
+- **Public repo:** Pages is free. Enable it via **Settings → Pages → Build and
+  deployment → Source: GitHub Actions**, or once with the API:
+  `gh api -X POST /repos/<user>/<repo>/pages -f build_type=workflow`.
+- **Private repo:** GitHub Pages requires a paid plan (GitHub Pro). Either upgrade,
+  make the repo public, or deploy `docs/` to an external static host
+  (Cloudflare Pages / Netlify support private repos for free — set the output
+  directory to `docs/` with no build command).
+
+> Note: the Actions token cannot *create* a Pages site (it returns 403), so Pages
+> must be enabled by a repo admin once before the workflow can deploy. After that
+> the workflow just publishes the existing site.
 
 ## Configuration
 
