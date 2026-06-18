@@ -52,5 +52,8 @@ CHUNK_SUMMARY_WORDS = 1_500
 MIN_DETAIL_CONTENT_WORDS = 25
 MIN_DETAIL_CONTENT_COVERAGE = 0.80
 WEEK_RANGE_START = "2025-12-01"
-WEEK_RANGE_END = "2026-05-31"
+# Leave WEEK_RANGE_END blank ("") to keep the weekly schedule open-ended: weeks
+# automatically extend in 7-day blocks up to the most recently completed week,
+# so the pipeline keeps publishing a new week every week with no end date.
+WEEK_RANGE_END = ""
 SCHEDULER_INTERVAL_HOURS = 6

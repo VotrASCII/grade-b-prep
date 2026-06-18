@@ -59,6 +59,22 @@ python run.py
 python pipeline/daily_runner.py --week 1
 ```
 
+**Backfill missing weekly outputs from available cached content**:
+
+Use this when the strict weekly runner skipped a week because one source did
+not have enough detail coverage, but there are still usable PIB/RBI detail
+items in `data/scraped/`.
+
+```bash
+python scripts/backfill_available_weeks.py --all-missing
+python scripts/backfill_available_weeks.py --week 12 --week 16
+python scripts/backfill_available_weeks.py --all-missing --dry-run
+```
+
+The backfill script writes to the same weekly summary/question paths, but it
+filters out title-only or weak-content items and asks the model to generate
+questions only from the facts available in the remaining detail content.
+
 **Manual monthly mode**:
 
 ```bash
@@ -73,16 +89,23 @@ python run.py --run-now
 
 ## Weekly Range
 
-Weekly runs are configured from **December 1, 2025** through **May 31, 2026** in 7-day blocks. This creates 26 weekly periods:
+Weekly runs start at **December 1, 2025** and continue **open-ended** in 7-day
+blocks — a new week is published every week with no end date.
 
 | Week | Date range |
 |------|------------|
 | 1 | 2025-12-01 to 2025-12-07 |
 | 2 | 2025-12-08 to 2025-12-14 |
 | ... | ... |
-| 26 | 2026-05-25 to 2026-05-31 |
+| N | rolling — the most recent fully-completed week |
 
-The scheduler only advances after a week is complete. If the next configured week has not ended yet, it waits for the next 6-hour scheduler tick.
+This is controlled by `WEEK_RANGE_START` / `WEEK_RANGE_END` in `config.py`. Leave
+`WEEK_RANGE_END = ""` (the default) for the open-ended rolling schedule; set it to
+a date (e.g. `"2026-05-31"`) to cap the schedule at a fixed final week.
+
+The scheduler only advances after a week is complete. When it has caught up to the
+most recent completed week it simply waits for the next 7-day block to elapse, then
+processes and publishes it on the next 6-hour scheduler tick.
 
 ## Day → Month Mapping
 
@@ -160,6 +183,52 @@ To email already-generated PDFs without rerunning scraping or Ollama:
 python pipeline/daily_runner.py --week 1 --email-existing
 python pipeline/daily_runner.py --week 1 --email-existing --email-to "one@example.com,two@example.com"
 ```
+
+## Website
+
+The weekly summaries and MCQs are published as a minimalist static site in `docs/`,
+served by GitHub Pages. The site reads directly from `data/summaries/*_to_*.md` and
+`data/questions/generated/*-qs.json` — no database, no framework, stdlib Python only.
+
+Build it from existing data:
+
+```bash
+python scripts/build_site.py
+# or, equivalently, via the scheduler entrypoint:
+python run.py --build-only
+```
+
+This writes a fast, fully-static site to `docs/`:
+
+| Path | Contents |
+|------|----------|
+| `docs/index.html` | Landing page + chronological index of all weeks (newest first) |
+| `docs/weeks/<key>.html` | Per-week page: descriptive summary + interactive MCQ quiz |
+| `docs/assets/style.css`, `docs/assets/app.js` | Minimalist styling + quiz logic |
+
+Each week page renders the summary with topic sections, highlighted figures/dates,
+and ⭐ priority markers, followed by an in-browser practice quiz (pick an option to
+see the correct answer, with a running score).
+
+### Automatic publishing
+
+`run.py` rebuilds the site after every completed week. Pass `--publish` to also
+commit and push the regenerated `docs/` so the live site updates each week:
+
+```bash
+python run.py --publish            # auto-scheduled: process + rebuild + push each week
+python run.py --run-now --publish  # process the current week now, then push
+```
+
+Raw scraped content in `data/` stays gitignored (private); only the rendered `docs/`
+site is committed.
+
+### One-time GitHub Pages setup
+
+In the repo on GitHub: **Settings → Pages → Build and deployment → Source:
+GitHub Actions**. The included `.github/workflows/pages.yml` then deploys `docs/`
+on every push that touches it. The site goes live at
+`https://<user>.github.io/grade-b-prep/`.
 
 ## Configuration
 

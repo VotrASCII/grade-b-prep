@@ -16,8 +16,10 @@ from pathlib import Path
 import schedule
 import time as time_mod
 
-from config import SCHEDULER_INTERVAL_HOURS
+from config import SCHEDULER_INTERVAL_HOURS, WEEK_RANGE_END
 from pipeline.daily_runner import get_week_period, total_configured_weeks
+
+OPEN_ENDED_SCHEDULE = not WEEK_RANGE_END.strip()
 
 BASE_DIR = Path(__file__).resolve().parent
 STATE_FILE = BASE_DIR / "data" / "state.json"
@@ -38,6 +40,43 @@ def _save_state(state: dict) -> None:
         json.dump(state, f, indent=2)
 
 
+def _rebuild_site(publish: bool = False) -> None:
+    """Regenerate the static site in docs/ and optionally commit & push it."""
+    build_script = BASE_DIR / "scripts" / "build_site.py"
+    if not build_script.exists():
+        return
+    print("  Rebuilding static site ...")
+    result = subprocess.run([sys.executable, str(build_script)], cwd=str(BASE_DIR))
+    if result.returncode != 0:
+        print(f"  [WARN] Site build exited with code {result.returncode}")
+        return
+    if publish:
+        _publish_site()
+
+
+def _publish_site() -> None:
+    """Commit and push the regenerated docs/ folder to the default branch."""
+    docs_dir = BASE_DIR / "docs"
+    subprocess.run(["git", "add", str(docs_dir)], cwd=str(BASE_DIR))
+    diff = subprocess.run(
+        ["git", "diff", "--cached", "--quiet", "--", str(docs_dir)],
+        cwd=str(BASE_DIR),
+    )
+    if diff.returncode == 0:
+        print("  No site changes to publish.")
+        return
+    stamp = datetime.now().strftime("%Y-%m-%d")
+    subprocess.run(
+        ["git", "commit", "-m", f"site: publish weekly update ({stamp})"],
+        cwd=str(BASE_DIR),
+    )
+    push = subprocess.run(["git", "push"], cwd=str(BASE_DIR))
+    if push.returncode == 0:
+        print("  Site published to remote.")
+    else:
+        print(f"  [WARN] git push exited with code {push.returncode}")
+
+
 def _run_week(week: int) -> None:
     start_date, end_date = get_week_period(week)
     print(
@@ -54,13 +93,19 @@ def _run_week(week: int) -> None:
         print(f"  Week {week} complete.")
 
 
-def run_current_week() -> bool:
+def run_current_week(publish: bool = False) -> bool:
     """Run the current weekly period, then increment state if it completed."""
     state = _load_state()
     week = state.get("current_week", 1)
     total_weeks = total_configured_weeks()
 
     if week > total_weeks:
+        if OPEN_ENDED_SCHEDULE:
+            print(
+                f"Week {week} has not completed yet. "
+                "Waiting for the next weekly period to elapse."
+            )
+            return True
         print("All configured weekly periods processed.")
         return False
 
@@ -77,7 +122,13 @@ def run_current_week() -> bool:
     state["current_week"] = week + 1
     _save_state(state)
 
+    # Rebuild the published site after each completed week so new content goes live.
+    _rebuild_site(publish=publish)
+
     if state["current_week"] > total_weeks:
+        if OPEN_ENDED_SCHEDULE:
+            print("\nUp to date. Waiting for the next weekly period to elapse.")
+            return True
         print("\nAll configured weekly periods processed.")
         return False
 
@@ -96,15 +147,32 @@ def main() -> None:
         action="store_true",
         help="Skip the scheduler and immediately run the current weekly period",
     )
+    parser.add_argument(
+        "--publish",
+        action="store_true",
+        help="After each completed week, commit and push the rebuilt docs/ site",
+    )
+    parser.add_argument(
+        "--build-only",
+        action="store_true",
+        help="Just rebuild the static site from existing data and exit",
+    )
     args = parser.parse_args()
 
+    if args.build_only:
+        _rebuild_site(publish=args.publish)
+        return
+
     if args.run_now:
-        run_current_week()
+        run_current_week(publish=args.publish)
         return
 
     # Auto-scheduled mode: run immediately once, then schedule every N hours.
     state = _load_state()
-    if state.get("current_week", 1) > total_configured_weeks():
+    if (
+        not OPEN_ENDED_SCHEDULE
+        and state.get("current_week", 1) > total_configured_weeks()
+    ):
         print("All configured weekly periods processed.")
         return
 
@@ -115,12 +183,12 @@ def main() -> None:
         f"every {SCHEDULER_INTERVAL_HOURS} hours..."
     )
 
-    more = run_current_week()
+    more = run_current_week(publish=args.publish)
     if not more:
         return
 
     def scheduled_job() -> None:
-        still_more = run_current_week()
+        still_more = run_current_week(publish=args.publish)
         if not still_more:
             return schedule.CancelJob
 

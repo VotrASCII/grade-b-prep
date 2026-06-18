@@ -87,16 +87,30 @@ def _month_key(year: int, month: int) -> str:
 
 def _configured_week_periods() -> list[tuple[date, date]]:
     start = _parse_iso_date(WEEK_RANGE_START)
-    end = _parse_iso_date(WEEK_RANGE_END)
-    if end < start:
-        raise RuntimeError(
-            f"Invalid weekly date range: {WEEK_RANGE_START} to {WEEK_RANGE_END}."
-        )
+
+    if WEEK_RANGE_END.strip():
+        # Fixed end date: enumerate 7-day blocks up to (and clamped at) the end.
+        end = _parse_iso_date(WEEK_RANGE_END)
+        if end < start:
+            raise RuntimeError(
+                f"Invalid weekly date range: {WEEK_RANGE_START} to {WEEK_RANGE_END}."
+            )
+        clamp_last_block = True
+    else:
+        # Open-ended schedule: extend in full 7-day blocks up to the most recent
+        # week that has already completed, so a fresh week appears every week.
+        end = date.today()
+        clamp_last_block = False
 
     periods = []
     cursor = start
     while cursor <= end:
-        period_end = min(cursor + timedelta(days=6), end)
+        period_end = cursor + timedelta(days=6)
+        if clamp_last_block:
+            period_end = min(period_end, end)
+        elif period_end > end:
+            # Open-ended: only publish weeks whose full 7-day block has elapsed.
+            break
         periods.append((cursor, period_end))
         cursor = period_end + timedelta(days=1)
     return periods

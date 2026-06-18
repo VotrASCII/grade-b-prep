@@ -40,7 +40,10 @@ Do two things strictly as instructed.
 ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
 PART 1 — GA SUMMARY
 ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
-Write a structured markdown summary of the most exam-relevant events from this period.
+Write a structured, richly descriptive markdown summary of the most exam-relevant
+events from this period. This is study material a candidate will read to understand
+the news — not just memorise it — so write in clear explanatory prose, not terse
+fragments.
 
 Use exactly these sections:
 ## RBI & Monetary Policy
@@ -53,8 +56,16 @@ Use exactly these sections:
 
 Rules for the summary:
 - 50 bullet points per section max
-- Any abbreviations must be expanded at least once (e.g. FSR → Financial Stability Report)
-- Each bullet must include a specific number, date, or name where relevant
+- Each bullet is 2–4 complete sentences. Start with the headline fact in **bold**,
+  then explain it: what was announced, the key figures/dates/names, WHO is involved
+  (issuing body, ministry, regulator), and WHY it matters for the exam or the wider
+  economy (the context, purpose, or significance). Avoid one-line stubs.
+- Any abbreviation must be expanded the first time it appears
+  (e.g. FSR → Financial Stability Report), then the short form may be reused.
+- Keep every specific number, date, rate, amount, place and proper name exactly as
+  issued — these are what questions are built from. Do not round or drop them.
+- Where a development continues or revises an earlier scheme/policy, say so briefly
+  so the reader understands the through-line.
 - Flag with ⭐ any item that covers a PERENNIAL HIGH-PRIORITY topic from this list:
 {must_prepare_str}
 
