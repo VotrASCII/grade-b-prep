@@ -518,7 +518,6 @@ def _news_card(item: dict) -> str:
     exams = item.get("exams") or []
     exam_attr = "|".join(exams)
     chips = "".join(_exam_chip(e) for e in exams)
-    url = _escape(item.get("url", "#"))
     return f"""
       <article class="news-card reveal" data-exams="{_escape(exam_attr)}">
         <div class="nc-meta">
@@ -526,11 +525,11 @@ def _news_card(item: dict) -> str:
           <span class="nc-source">{_escape(item.get('source', ''))}</span>
           <span class="nc-topic">{_escape(item.get('topic', ''))}</span>
         </div>
-        <h3 class="nc-title"><a href="{url}" target="_blank" rel="noopener nofollow">{_escape(item.get('title', ''))}</a></h3>
-        <p class="nc-rel">{_escape(item.get('relevance', ''))}</p>
+        <h3 class="nc-title">{_escape(item.get('title', ''))}</h3>
+        <p class="nc-summary">{_escape(item.get('summary', ''))}</p>
         <div class="nc-foot">
           <div class="nc-chips">{chips}</div>
-          <a class="nc-read" href="{url}" target="_blank" rel="noopener nofollow">Read at {_escape(item.get('source', 'source'))} ↗</a>
+          <span class="nc-cite">via {_escape(item.get('source', 'source'))}</span>
         </div>
       </article>"""
 
@@ -561,9 +560,9 @@ def render_news(news: dict) -> str:
   <section class="hero hero-tight">
     <p class="eyebrow reveal">Current affairs · cited sources</p>
     <h1 class="display reveal">In the<br><em>news</em>.</h1>
-    <p class="lede reveal">Business &amp; economy headlines from the Economic Times, Mint and
-    Hindustan Times — each tagged with the exams it matters for and linked back to the
-    original. Only headlines and short summaries are shown; follow the link to read in full.</p>
+    <p class="lede reveal">Concise, exam-focused summaries of the business &amp; economy news that
+    matters — each written in-house, tagged with the exams it's relevant to, and credited to
+    the outlet that reported it. Everything you need to read is right here.</p>
     <div class="hero-meta reveal">
       <span><b>{len(items)}</b> items</span>
       <span>{_escape(', '.join(sources))}</span>
@@ -575,9 +574,9 @@ def render_news(news: dict) -> str:
     <div class="news-filters reveal" id="news-filters">{filters}</div>
     <div class="news-list" id="news-list">{cards}
     </div>
-    <p class="news-disclaimer reveal">Headlines and summaries are sourced from the publishers'
-    public RSS feeds and remain the copyright of their respective outlets. This page links to
-    the originals and does not reproduce full articles.</p>
+    <p class="news-disclaimer reveal">Summaries are written in-house from facts reported in the
+    publishers' public RSS feeds and are credited to the originating outlet. Underlying facts
+    belong to their reporting; no full articles are reproduced.</p>
   </section>
 </main>
 {_footer("")}"""

@@ -68,10 +68,6 @@ def heuristic_topic(item: dict) -> str:
             best, best_hits = topic, hits
     return best
 
-def heuristic_relevance(item: dict, exams: list[str]) -> str:
-    short = ", ".join(e.replace(" / Banking", "/Banking") for e in exams)
-    return f"Current-affairs item relevant to {short}."
-
 
 # ---------------------------------------------------------------------------
 # LLM refinement (optional)
@@ -95,17 +91,21 @@ def _build_batch_prompt(batch: list[dict]) -> str:
     items_block = "\n".join(lines)
     exams = ", ".join(EXAM_NAMES)
     return f"""\
-You are tagging Indian business/finance news headlines for competitive-exam prep.
+You are writing self-contained study notes from Indian business/finance news for
+competitive-exam aspirants. Each item gives a headline and a short blurb.
 
-For EACH numbered item below, decide:
+For EACH numbered item below, produce:
+- summary: 2-3 sentences IN YOUR OWN WORDS that explain what happened, the key
+  facts/figures/names, and why it matters for the exam. This is the only thing the
+  student will read — make it complete and standalone. Do NOT copy the blurb
+  verbatim and do NOT tell the reader to "read more" anywhere.
 - exams: which of these it is relevant to (subset, may be several): {exams}
-- relevance: ONE concise sentence on why it matters for those exams (your own words)
 - topic: a short label, one of: RBI & Monetary Policy, Banking & Finance,
   Markets & Securities, Agriculture & Rural, Govt Schemes & Policy,
   Economy & Trade, International
 
 Return ONLY a JSON array, one object per item, no prose, no markdown fences:
-[{{"i": 1, "exams": ["RBI Grade B"], "relevance": "...", "topic": "Economy & Trade"}}]
+[{{"i": 1, "summary": "...", "exams": ["RBI Grade B"], "topic": "Economy & Trade"}}]
 
 ITEMS:
 {items_block}
@@ -146,8 +146,9 @@ def llm_refine(items: list[dict], batch_size: int = 12) -> None:
             exams = [e for e in EXAM_NAMES if e in (obj.get("exams") or [])]
             if exams:
                 item["exams"] = exams
-            if obj.get("relevance"):
-                item["relevance"] = str(obj["relevance"]).strip()
+            if obj.get("summary"):
+                # Replace the RSS blurb with our own original, exam-focused summary.
+                item["summary"] = str(obj["summary"]).strip()
             if obj.get("topic"):
                 item["topic"] = str(obj["topic"]).strip()
 
@@ -181,7 +182,8 @@ def run(use_llm: bool = True, lookback_days: int | None = None) -> Path:
     for it in items:
         it["exams"] = heuristic_exams(it)
         it["topic"] = heuristic_topic(it)
-        it["relevance"] = heuristic_relevance(it, it["exams"])
+        # Without the LLM, fall back to the RSS blurb as the summary.
+        it["summary"] = it.get("summary") or ""
 
     if use_llm and _ollama_available():
         print("\n[Step 3] Refining tags with Ollama ...")

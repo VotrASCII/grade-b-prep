@@ -197,13 +197,14 @@ relevance tags.
 - **Sources:** Economic Times, Mint, Hindustan Times — read via their public **RSS
   feeds**. Business Standard is excluded (it blocks automated access and is hard
   paywalled).
-- **What is stored:** only RSS metadata — headline, source, date, link, and a short
-  summary. Full copyrighted article bodies are **never** scraped or republished;
-  every item links back to and cites the original.
+- **What is stored:** only RSS metadata — headline, source, date, and a short blurb.
+  Full copyrighted article bodies are **never** scraped or republished.
+- **Self-contained summaries:** Ollama rewrites each item into an original 2–3
+  sentence, exam-focused summary shown inline on the site (no outbound links) and
+  credited to the originating outlet. Without Ollama, the RSS blurb is used as-is.
 - **Exam tagging:** each item is screened for relevance to **RBI Grade B, SEBI
-  Grade A, NABARD Grade A, and UPSC / Banking**, with a one-line "why it matters"
-  note. A keyword heuristic provides the baseline; **Ollama** refines the tags,
-  topic, and note when it is reachable.
+  Grade A, NABARD Grade A, and UPSC / Banking**. A keyword heuristic provides the
+  baseline; Ollama refines the tags and topic when reachable.
 
 Run it:
 
