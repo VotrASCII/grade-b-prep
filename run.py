@@ -51,6 +51,26 @@ def _refresh_news() -> None:
         print(f"  [WARN] News refresh exited with code {result.returncode}")
 
 
+def _refresh_static() -> None:
+    """Best-effort: download + ingest Economic Survey / Yojana PDFs for any exam
+    that uses them. Idempotent — skips editions already ingested, retries daily
+    until a PDF is reachable (or dropped into data/static/<exam>/pdfs/)."""
+    from config import active_exams
+
+    fetch = BASE_DIR / "pipeline" / "static_fetch.py"
+    if not fetch.exists():
+        return
+    for slug, cfg in active_exams().items():
+        if "econsurvey" not in cfg.get("sources", []):
+            continue
+        print(f"  Refreshing static sources (ES/Yojana) for {cfg['name']} ...")
+        result = subprocess.run(
+            [sys.executable, str(fetch), "--exam", slug], cwd=str(BASE_DIR)
+        )
+        if result.returncode != 0:
+            print(f"  [WARN] Static refresh for {slug} exited with code {result.returncode}")
+
+
 def _rebuild_site(publish: bool = False, refresh_news: bool = False) -> None:
     """Regenerate the static site in docs/ and optionally commit & push it."""
     if refresh_news:
@@ -212,6 +232,12 @@ def main() -> None:
             return schedule.CancelJob
 
     schedule.every(SCHEDULER_INTERVAL_HOURS).hours.do(scheduled_job)
+
+    # Static sources (Economic Survey — yearly; Yojana — monthly): try once now,
+    # then check daily. Idempotent, so a new ES edition or month's Yojana is picked
+    # up automatically; failed downloads simply retry until the PDF is reachable.
+    _refresh_static()
+    schedule.every().day.at("05:30").do(_refresh_static)
 
     print("Scheduler active. Press Ctrl+C to exit.")
     while True:

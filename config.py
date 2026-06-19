@@ -87,6 +87,21 @@ NEWS_EXAMS = {
         "fiscal", "subsidy", "policy", "government", "ministry", "world bank",
     ],
 }
+# ── Static-source PDFs (Economic Survey — yearly; Yojana — monthly) ────────
+# These are published as PDFs, so they are downloaded, text-extracted, and fed to
+# the static_runner. URLs/patterns are best-effort and overridable; if a download
+# fails you can drop the PDF into data/static/<exam>/pdfs/ and the extractor still
+# picks it up. {year} is substituted (e.g. 2025) for the relevant edition.
+ECON_SURVEY_PAGE = "https://www.indiabudget.gov.in/economicsurvey/"
+ECON_SURVEY_PDF_CANDIDATES = [
+    "https://www.indiabudget.gov.in/economicsurvey/doc/echapter.pdf",
+    "https://www.indiabudget.gov.in/budget{year}-26/economicsurvey/doc/echapter.pdf",
+]
+YOJANA_PAGE = "https://www.yojana.gov.in/"
+# Cap on extracted words fed to the LLM per static source (keeps prompts sane).
+STATIC_MAX_WORDS = 16_000
+STATIC_MAX_PAGES_PER_PDF = 220
+
 # How many days back to include in a news digest, and the cap per source.
 # 1 => today + yesterday only (a rolling 2-day window): anything that didn't
 # make yesterday's digest surfaces today, and stale items roll off the next day.

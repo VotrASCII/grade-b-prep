@@ -59,22 +59,41 @@ repeating facts and while respecting GA weightage*, each static source is split 
 topic-tagged **segments**, and a **rotation ledger** hands each segment to exactly one
 week — so a fact is asked at most once.
 
+These PDFs are **downloaded, text-extracted (pdfplumber), and summarised
+automatically** — and the scheduler keeps them current with no manual step:
+
 ```bash
-# Build a stored, segmented summary (Economic Survey / Yojana are mostly PDF/JS,
-# so pass extracted text with --from-file; scraping is attempted otherwise)
-python pipeline/static_runner.py --exam upsc-banking --economic-survey 2025 \
-    --from-file data/static/upsc-banking/sources/econsurvey-2025.txt
-python pipeline/static_runner.py --exam upsc-banking --yojana 2026-06 \
-    --from-file data/static/upsc-banking/sources/yojana-2026-06.txt
+# One command: download + extract + summarise the latest Economic Survey and the
+# current month's Yojana for an exam (idempotent — skips editions already done).
+python pipeline/static_fetch.py --exam upsc-banking
+
+# Specific editions:
+python pipeline/static_fetch.py --exam upsc-banking --economic-survey 2025
+python pipeline/static_fetch.py --exam upsc-banking --yojana 2026-06
 ```
 
-Output is stored under `data/static/<exam>/` (a section-wise `.md` summary + a `.json`
-of segments). On each weekly run, `daily_runner` calls `select_for_week()` to claim the
-next unused segments (preferring the current month's Yojana), marks them consumed in
-`data/static/<exam>/rotation.json`, and the weekly prompt builds a fixed quota
-(`DEFAULT_WEEKLY_STATIC_QUOTA`, default 6) of MCQs from them — folded **into** the topic
-distribution (they replace current-affairs questions in the same topics, not add to
-them). Re-running a week is idempotent (it keeps its already-assigned segments).
+`run.py` runs this on startup and **daily at 05:30**, so a new Economic Survey (yearly)
+or Yojana issue (monthly) is picked up on its own; failed downloads simply retry the
+next day until the PDF is reachable.
+
+**If a download fails** (gov sites are flaky/JS-heavy), just drop the PDF into
+`data/static/<exam>/pdfs/` named so the edition is recognisable (e.g.
+`econsurvey-2025.pdf`, `yojana-2026-06.pdf`) and re-run with `--extract-only` — the
+extractor ingests whatever is there:
+
+```bash
+python pipeline/static_fetch.py --exam upsc-banking --extract-only
+```
+
+Under the hood the extracted text is handed to `static_runner.py`, which builds the
+section-wise summary + segments (you can also run it directly on a text file via
+`--from-file`). Output is stored under `data/static/<exam>/` (a section-wise `.md`
+summary + a `.json` of segments). On each weekly run, `daily_runner` calls
+`select_for_week()` to claim the next unused segments (preferring the current month's
+Yojana), marks them consumed in `data/static/<exam>/rotation.json`, and the weekly
+prompt builds a fixed quota (`DEFAULT_WEEKLY_STATIC_QUOTA`, default 6) of MCQs from
+them — folded **into** the topic distribution (they replace current-affairs questions
+in the same topics, not add to them). Re-running a week is idempotent.
 
 ### Study cycles & archive
 
