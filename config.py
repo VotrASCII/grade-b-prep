@@ -129,6 +129,11 @@ ECON_SURVEY_SECTIONS = [
     "Climate, Environment & Sustainability",
 ]
 
+# A few fresh Economic Survey questions are folded into each weekly paper (for exams
+# that have an ES reference source), drawn from random ES sections and kept DISTINCT
+# from the stored ES quiz. 0 disables.
+WEEKLY_REFERENCE_QUESTIONS = 5
+
 # How many days back the digest fetches, and the cap per source.
 # The digest stores a rolling week of items; the site then splits them:
 #   * the main "In the news" list shows only the last NEWS_HEADLINE_DAYS+1 days

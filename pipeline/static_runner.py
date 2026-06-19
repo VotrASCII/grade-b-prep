@@ -285,6 +285,91 @@ SECTION SUMMARY — {section} (Economic Survey {key}):
 """
 
 
+def _split_md_sections(md: str) -> dict[str, str]:
+    """Split a '## heading\\nbody' markdown summary into {heading: body}."""
+    sections: dict[str, str] = {}
+    cur, buf = None, []
+    for line in md.splitlines():
+        if line.startswith("## "):
+            if cur is not None:
+                sections[cur] = "\n".join(buf).strip()
+            cur, buf = line[3:].strip(), []
+        elif cur is not None:
+            buf.append(line)
+    if cur is not None:
+        sections[cur] = "\n".join(buf).strip()
+    return {k: v for k, v in sections.items() if v}
+
+
+def _weekly_es_prompt(exam: str, key: str, section: str, body: str, avoid: list[str]) -> str:
+    profile = _load_profile(exam)
+    opts = int(profile.get("options_count", 4))
+    letters = "ABCDE"[:opts]
+    last = letters[-1]
+    avoid_block = "\n".join(f"- {s}" for s in avoid[:40]) or "(none)"
+    return f"""\
+You are an expert question-setter for the {EXAMS[exam]['name']} exam. From the Economic
+Survey ({key}) section **{section}**, write ONE original General-Awareness MCQ.
+
+- Base it ONLY on facts in the section summary below; test an exact fact (figure,
+  scheme, target, year, ranking, definition).
+- EXACTLY {opts} options ({letters[0]}–{last}); exactly one correct.
+- It MUST be clearly different from these already-used questions (do not paraphrase):
+{avoid_block}
+
+Output ONLY this, nothing else:
+Q1. <question text>
+{chr(10).join(f"{l}. <option>" for l in letters)}
+Answer: <{letters[0]}-{last}>
+
+SECTION SUMMARY — {section} (Economic Survey {key}):
+{body}
+"""
+
+
+def weekly_reference_questions(exam: str, n: int) -> list[dict]:
+    """Generate up to ``n`` fresh Economic Survey MCQs from random sections, distinct
+    from the stored ES quiz, to fold into a weekly paper. Returns [] if the exam has no
+    Economic Survey reference source or n<=0. Needs Ollama."""
+    if n <= 0:
+        return []
+    import random
+
+    from pipeline.static_sources import list_sources
+    from pipeline.daily_runner import call_ollama_with_fallback, parse_questions
+
+    srcs = [s for s in list_sources(exam)
+            if s.get("kind") == "economic-survey" and s.get("summary_md", "").strip()]
+    if not srcs:
+        return []
+    src = srcs[0]  # most recent edition
+    key = src["key"]
+    sections = _split_md_sections(src["summary_md"])
+    if not sections:
+        return []
+
+    used_by_section: dict[str, list[str]] = {}
+    for q in src.get("questions", []):
+        used_by_section.setdefault(q.get("section", ""), []).append(q.get("question", ""))
+
+    titles = list(sections)
+    random.shuffle(titles)
+    out: list[dict] = []
+    for title in titles:
+        if len(out) >= n:
+            break
+        qs = parse_questions(call_ollama_with_fallback(
+            _weekly_es_prompt(exam, key, title, sections[title], used_by_section.get(title, []))
+        ))
+        if qs:
+            q = qs[0]
+            q["section"] = "From the Economic Survey"  # group these together on the page
+            q["es_chapter"] = title
+            q["source"] = f"Economic Survey {key}"
+            out.append(q)
+    return out
+
+
 def run(
     exam: str,
     kind: str,

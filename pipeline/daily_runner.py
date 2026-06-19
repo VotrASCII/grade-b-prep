@@ -2016,6 +2016,20 @@ def _run_week_exam(
     questions = normalize_questions(questions)
     print(f"  Summary: {len(summary)} chars | Questions parsed: {len(questions)}")
 
+    # Fold a few fresh Economic Survey questions into the weekly paper (only for exams
+    # that have an ES reference source). Random sections, distinct from the stored ES
+    # quiz, grouped under their own heading on the page.
+    from config import WEEKLY_REFERENCE_QUESTIONS
+    if WEEKLY_REFERENCE_QUESTIONS:
+        try:
+            from pipeline.static_runner import weekly_reference_questions
+            ref_qs = weekly_reference_questions(exam, WEEKLY_REFERENCE_QUESTIONS)
+            if ref_qs:
+                print(f"  + {len(ref_qs)} Economic Survey question(s) folded in (random sections).")
+                questions = questions + ref_qs
+        except Exception as e:  # noqa: BLE001
+            print(f"  [WARN] Economic Survey weekly questions skipped: {e}")
+
     print("\n[Step 5] Saving outputs ...")
     _save_outputs_exam(cfg, summary, questions, period_name, output_key, f"Week {week} pipeline")
 
