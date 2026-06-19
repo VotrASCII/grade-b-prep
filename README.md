@@ -5,7 +5,7 @@ India's top government exams. Built first for **RBI Grade B Phase 1**, now being
 generalised to a **multi-exam** platform (UPSC / Banking next, then SEBI Grade A
 and NABARD Grade A).
 
-**Live site:** https://votrascii.github.io/grade-b-prep/
+**Live site:** https://votrascii.github.io/govt-exam-prep/
 
 ## What it does
 
@@ -16,7 +16,7 @@ and NABARD Grade A).
 3. **Generates AI summaries + practice MCQs** for weekly or monthly periods using Ollama,
    with the topic and question-type mix tuned per exam (see *Multi-exam architecture*)
 4. **Schedules itself** to process one completed week every 6 hours
-5. **Publishes a minimalist website** ([live here](https://votrascii.github.io/grade-b-prep/))
+5. **Publishes a minimalist website** ([live here](https://votrascii.github.io/govt-exam-prep/))
    **categorised by exam**, each with descriptive summaries and an in-browser practice quiz
 6. **Curates exam-relevant news** from ET / Mint / Hindustan Times (via RSS), tagged by
    exam and shown as self-contained summaries (rolling 2-day window)
@@ -198,23 +198,14 @@ The scheduler only advances after a week is complete. When it has caught up to t
 most recent completed week it simply waits for the next 7-day block to elapse, then
 processes and publishes it on the next 6-hour scheduler tick.
 
-## Day → Month Mapping
+## Week numbering
 
-| Day | Month      |
-|-----|------------|
-| 1   | May 2025   |
-| 2   | June 2025  |
-| 3   | July 2025  |
-| 4   | Aug 2025   |
-| 5   | Sep 2025   |
-| 6   | Oct 2025   |
-| 7   | Nov 2025   |
-| 8   | Dec 2025   |
-| 9   | Jan 2026   |
-| 10  | Feb 2026   |
-| 11  | Mar 2026   |
-| 12  | Apr 2026   |
-| 13  | May 2026   |
+Content is organised into **weekly** 7-day blocks, numbered within a yearly
+**study cycle**. A cycle starts on the **last Monday of December** and runs ~52
+weeks, so **Week 1 of the 2025–26 cycle is the week of 29 Dec 2025**. Weeks before
+the current cycle's start roll into each exam's **Archive** automatically, and a
+fresh Week 1 begins every December with no manual migration. See
+*Study cycles & archive* above for the underlying helpers.
 
 ## Output files
 
@@ -363,7 +354,7 @@ site is committed.
 
 ### Hosting (GitHub Pages)
 
-The site is already live at **https://votrascii.github.io/grade-b-prep/**, served by
+The site is already live at **https://votrascii.github.io/govt-exam-prep/**, served by
 GitHub Pages from `docs/`. The included `.github/workflows/pages.yml` redeploys it
 automatically on every push that touches `docs/` (typically `run.py --publish`).
 
