@@ -1780,7 +1780,32 @@ def _run_week_exam(
 
     print("\n[Step 3] Building prompt & calling Ollama ...")
     t3 = time.time()
-    prompt = build_prompt(combined, period_name, exam=exam)
+    # Fold a rotating slice of Economic Survey / Yojana segments into this week's
+    # paper. The rotation ledger guarantees each segment is used by only one week,
+    # so static facts never repeat across weeks (see pipeline/static_sources.py).
+    from pipeline.static_sources import (
+        DEFAULT_WEEKLY_STATIC_QUOTA,
+        format_block,
+        select_for_week,
+    )
+
+    static_segs = select_for_week(
+        cfg["slug"], output_key, start_date, DEFAULT_WEEKLY_STATIC_QUOTA
+    )
+    static_block = format_block(static_segs) if static_segs else None
+    static_quota = len(static_segs)
+    if static_segs:
+        print(
+            f"  Static sources: folding {static_quota} question(s) from "
+            f"{len(static_segs)} Economic Survey/Yojana segment(s) into this week"
+        )
+    prompt = build_prompt(
+        combined,
+        period_name,
+        exam=exam,
+        static_block=static_block,
+        static_quota=static_quota,
+    )
     response = call_ollama_with_fallback(prompt)
     print(f"  Ollama response: {len(response)} chars  ({time.time()-t3:.1f}s)")
     raw_key = f"{cfg['slug']}-{output_key}"

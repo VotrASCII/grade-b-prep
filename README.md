@@ -51,6 +51,47 @@ Drop an exam's previous-year GA papers (as `{"question","options",...}` JSON) in
 `data/questions/pyq/<exam-slug>/` and re-run `derive_weightage.py` to refresh its mix.
 Until that is done, an exam uses the documented research-default weightage in its taxonomy.
 
+### Static sources — Economic Survey (yearly) & Yojana (monthly)
+
+The Economic Survey is processed **once a year** and Yojana **once a month**, but
+questions are generated **weekly**. To fold this material into weekly papers *without
+repeating facts and while respecting GA weightage*, each static source is split into
+topic-tagged **segments**, and a **rotation ledger** hands each segment to exactly one
+week — so a fact is asked at most once.
+
+```bash
+# Build a stored, segmented summary (Economic Survey / Yojana are mostly PDF/JS,
+# so pass extracted text with --from-file; scraping is attempted otherwise)
+python pipeline/static_runner.py --exam upsc-banking --economic-survey 2025 \
+    --from-file data/static/upsc-banking/sources/econsurvey-2025.txt
+python pipeline/static_runner.py --exam upsc-banking --yojana 2026-06 \
+    --from-file data/static/upsc-banking/sources/yojana-2026-06.txt
+```
+
+Output is stored under `data/static/<exam>/` (a section-wise `.md` summary + a `.json`
+of segments). On each weekly run, `daily_runner` calls `select_for_week()` to claim the
+next unused segments (preferring the current month's Yojana), marks them consumed in
+`data/static/<exam>/rotation.json`, and the weekly prompt builds a fixed quota
+(`DEFAULT_WEEKLY_STATIC_QUOTA`, default 6) of MCQs from them — folded **into** the topic
+distribution (they replace current-affairs questions in the same topics, not add to
+them). Re-running a week is idempotent (it keeps its already-assigned segments).
+
+### Study cycles & archive
+
+The site shows one **study cycle** at a time. A cycle starts on the **last Monday of
+December** (29 Dec 2025 = Week 1 of the 2025–26 cycle) and runs ~52 weeks. Weeks before
+the current cycle move into a per-exam **Archive** section, grouped by cycle. This
+recurs automatically: when the next cycle begins each December, the previous cycle rolls
+into the archive with no manual migration (`config.current_cycle_start` /
+`cycle_start_for` / `cycle_label`).
+
+### Repository security
+
+`main` is protected: every change requires a pull request with an approving review from
+the code owner (`.github/CODEOWNERS` → the repo owner), stale reviews are dismissed, and
+force-pushes/deletions are blocked. The repo is owner-only (no other collaborators), so
+no other account can push; any future collaborator must open a PR the owner approves.
+
 ## Setup
 
 ### 1. Install Ollama and pull the model

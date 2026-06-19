@@ -26,6 +26,8 @@ def build_prompt(
     period_name: str,
     year: int | str | None = None,
     exam: str = DEFAULT_EXAM,
+    static_block: str | None = None,
+    static_quota: int = 0,
 ) -> str:
     period_label = f"{period_name} {year}".strip() if year else period_name
     taxonomy = _load_taxonomy(exam)
@@ -84,6 +86,25 @@ def build_prompt(
     option_line_example = "  ".join(
         f"{letter}. [option]" for letter in ["A", "B", "C", "D", "E"][:options_count]
     )
+
+    # ── optional static-source focus (Economic Survey / Yojana) ────────────
+    static_section = ""
+    if static_block and static_quota > 0:
+        static_section = f"""
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+STATIC SOURCE FOCUS — Economic Survey / Yojana
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+Of the {total_questions} MCQs in PART 2, build EXACTLY {static_quota} from the material
+below (the rest from the weekly raw content). Place each of these {static_quota}
+questions under its natural topic so the TOPIC DISTRIBUTION above still holds — they
+REPLACE an equal number of current-affairs questions in the same topics, they are not
+extra. Every fact may back at most ONE question; do not repeat a fact across questions.
+This material has not been used in earlier weeks, so none of these questions should
+duplicate anything previously asked.
+
+{static_block}
+"""
+
 
     prompt = f"""\
 You are an expert {coach_role}.
@@ -145,7 +166,7 @@ VALID PART 2 EXAMPLE:
 {profile['example_question']}
 
 Before finalizing PART 2, verify that all {total_questions} questions have an Answer: line. Do not output a question without its answer.
-
+{static_section}
 ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
 RAW CONTENT — {period_label.upper()}
 ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
