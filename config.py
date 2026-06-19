@@ -1,7 +1,7 @@
 from datetime import date as _date, timedelta as _timedelta
 
 OLLAMA_URL = "http://localhost:11434/api/generate"
-OLLAMA_MODEL_PRIMARY = "gpt-oss:120b-cloud"
+OLLAMA_MODEL_PRIMARY = "gpt-oss:20b-cloud"
 OLLAMA_MODEL_FALLBACK = "qwen3.5:2b"
 OLLAMA_MODELS = [
     OLLAMA_MODEL_PRIMARY,
@@ -109,6 +109,25 @@ YOJANA_PAGE = "https://www.yojana.gov.in/"
 # STATIC_MAX_PAGES_PER_PDF covers a full-length Survey.
 STATIC_MAX_WORDS = 220_000
 STATIC_MAX_PAGES_PER_PDF = 900
+
+# The Economic Survey is summarised SECTION-WISE: each of these standard thematic
+# chapters gets its own independent summary pass (not one consolidated summary), so
+# a 700+ page document yields depth per section rather than ~50 collapsed points.
+# Stable across editions (the Survey always covers these themes).
+ECON_SURVEY_SECTIONS = [
+    "State of the Economy & Growth Outlook",
+    "Fiscal Developments & Public Finance",
+    "Monetary & Financial Sector Developments",
+    "External Sector: Trade, Balance of Payments & Forex",
+    "Prices & Inflation",
+    "Agriculture & Food Management",
+    "Industry & Manufacturing",
+    "Services Sector",
+    "Infrastructure, Investment & Energy",
+    "Social Sector: Health, Education & Welfare",
+    "Employment, Labour & Skilling",
+    "Climate, Environment & Sustainability",
+]
 
 # How many days back the digest fetches, and the cap per source.
 # The digest stores a rolling week of items; the site then splits them:

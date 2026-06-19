@@ -10,7 +10,7 @@ per exam, and publishes a **pure-stdlib static site** to GitHub Pages. Live exam
 Grade B (default), UPSC / Banking. Scaffolded: SEBI Grade A, NABARD Grade A.
 
 No web framework, no database. Python standard library + a few scrapers. The LLM is
-**Ollama** (`gpt-oss:120b-cloud` primary, small `qwen3.5` fallbacks). Cloud models run
+**Ollama** (`gpt-oss:20b-cloud` primary, small `qwen3.5` fallbacks). Cloud models run
 on-demand even if absent from `ollama list`.
 
 ## Architecture (data-driven by `config.py`)
@@ -108,7 +108,7 @@ Worth considering later (don't block on these):
 - A full weekly run is genuinely heavy (~30 min/exam): PIB can be ~190k words → ~15 map-reduce
   chunks. The 740-page Economic Survey is slow to extract (pdfplumber) and map-reduce. This is
   expected; don't truncate to "speed it up" — that's what regressed the ES summary before.
-- `gpt-oss:120b-cloud` is the primary even though it's a cloud model not shown by `ollama list`.
+- `gpt-oss:20b-cloud` is the primary even though it's a cloud model not shown by `ollama list`.
 
 ## Common commands
 ```bash

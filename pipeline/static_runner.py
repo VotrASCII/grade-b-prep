@@ -38,6 +38,7 @@ from config import (  # noqa: E402
     CHUNK_CONTENT_WORDS,
     CHUNK_SUMMARY_WORDS,
     DEFAULT_EXAM,
+    ECON_SURVEY_SECTIONS,
     EXAMS,
 )
 from pipeline.static_sources import save_quiz, save_source, static_dir  # noqa: E402
@@ -222,6 +223,68 @@ def _get_source_text(kind: str, key: str, from_file: str | None) -> str:
     return ""  # Yojana has no reliable scraper; require --from-file
 
 
+def _section_summary_prompt(exam: str, key: str, section: str, notes: str) -> str:
+    return f"""\
+You are preparing {EXAMS[exam]['name']} study material from the Economic Survey ({key}).
+Write a thorough, standalone summary of ONLY the **{section}** part of the Survey.
+
+- Use only facts in the notes below that relate to {section}.
+- Be comprehensive and specific: keep exact figures, percentages, scheme names,
+  targets, years, rankings, institutions, committees and definitions.
+- Markdown bullet points (use short sub-bullets where useful). This is ONE chapter of
+  a full Economic Survey — aim for depth: many points, not a handful.
+- Do NOT write MCQs. Do NOT repeat the section title as a heading (it is added for you).
+- If the notes hold little on this section, summarise what is present (don't invent).
+
+NOTES (condensed from the full Economic Survey {key}):
+{notes}
+"""
+
+
+def _section_wise_summary(exam: str, key: str, notes: str, call_ollama) -> list[tuple[str, str]]:
+    """Summarise the Economic Survey one section at a time (independent passes).
+    Returns [(section_title, body_markdown), ...] — each section gets its own depth
+    instead of collapsing 700+ pages into a single over-compressed summary."""
+    from pipeline.daily_runner import clean_summary_markdown
+
+    pairs: list[tuple[str, str]] = []
+    total = len(ECON_SURVEY_SECTIONS)
+    for i, section in enumerate(ECON_SURVEY_SECTIONS, 1):
+        print(f"    [summary {i}/{total}] {section} ...")
+        body = clean_summary_markdown(call_ollama(_section_summary_prompt(exam, key, section, notes))).strip()
+        if body:
+            pairs.append((section, body))
+    return pairs
+
+
+def _section_quiz_prompt(exam: str, key: str, section: str, body: str, n: int) -> str:
+    profile = _load_profile(exam)
+    opts = int(profile.get("options_count", 4))
+    letters = "ABCDE"[:opts]
+    last = letters[-1]
+    return f"""\
+You are an expert question-setter for the {EXAMS[exam]['name']} exam. From the
+Economic Survey ({key}) — section **{section}** — write {n} original GA MCQs.
+
+Rules:
+- Base every question ONLY on facts in the section summary below.
+- Test exact facts: figures, percentages, scheme names, targets, years, rankings,
+  committees, definitions. Spread across the whole section; no duplicates.
+- Each question has EXACTLY {opts} options ({letters[0]}–{last}); exactly one correct.
+- No "all/none of the above", no opinion questions.
+
+Output ONLY the questions in EXACTLY this format, nothing else:
+Q1. <question text>
+{chr(10).join(f"{l}. <option>" for l in letters)}
+Answer: <{letters[0]}-{last}>
+
+Q2. ...
+
+SECTION SUMMARY — {section} (Economic Survey {key}):
+{body}
+"""
+
+
 def run(
     exam: str,
     kind: str,
@@ -257,28 +320,41 @@ def run(
     else:
         summary_basis = source_text
 
-    prompt = _build_prompt(exam, kind, key, topics, summary_basis)
-    print("  [1/2] Generating section-wise summary + segments via Ollama ...")
-    raw = call_ollama_with_fallback(prompt)
-    summary_md, segments = _parse_output(raw)
-    if not segments:
-        print("  [WARN] No segments parsed; saving summary only.")
+    if kind == "economic-survey":
+        # Independent per-section summaries (depth per chapter, not consolidated),
+        # then a dedicated quiz of n_questions MCQs PER SECTION.
+        print(f"  [1/2] Summarising {len(ECON_SURVEY_SECTIONS)} sections independently ...")
+        pairs = _section_wise_summary(exam, key, summary_basis, call_ollama_with_fallback)
+        summary_md = "\n\n".join(f"## {sec}\n{body}" for sec, body in pairs)
+        save_source(exam, kind, key, summary_md, [])
+        print(f"  Saved section-wise summary ({len(summary_md.split())} words, {len(pairs)} sections).")
 
-    out = save_source(exam, kind, key, summary_md, segments)
-    print(f"  Saved {len(segments)} segments + summary → {out.relative_to(BASE_DIR)}")
+        print(f"  [2/2] Curating {n_questions} MCQs PER SECTION "
+              f"(~{n_questions * len(pairs)} total) ...")
+        questions: list[dict] = []
+        for i, (section, body) in enumerate(pairs, 1):
+            print(f"    [quiz {i}/{len(pairs)}] {section} ...")
+            qs = parse_questions(
+                call_ollama_with_fallback(_section_quiz_prompt(exam, key, section, body, n_questions))
+            )
+            for q in qs:
+                q["section"] = section  # tag for grouping/clarity on the site
+            questions.extend(qs)
+    else:
+        prompt = _build_prompt(exam, kind, key, topics, summary_basis)
+        print("  [1/2] Generating section-wise summary + segments via Ollama ...")
+        summary_md, segments = _parse_output(call_ollama_with_fallback(prompt))
+        save_source(exam, kind, key, summary_md, segments)
+        print(f"  Saved summary ({len(summary_md.split())} words, {len(segments)} segments).")
+        print(f"  [2/2] Curating {n_questions} dedicated MCQs from the summary ...")
+        quiz_basis = summary_md if len(summary_md.split()) > 120 else source_text
+        questions = parse_questions(_quiz_prompt(exam, kind, key, quiz_basis, n_questions))
 
-    # Dedicated quiz: questions asked from this source itself, kept SEPARATE from
-    # the weekly current-affairs paper (its own section on the site).
-    print(f"  [2/2] Curating {n_questions} dedicated MCQs from the summary ...")
-    quiz_basis = summary_md if len(summary_md.split()) > 120 else source_text
-    qprompt = _quiz_prompt(exam, kind, key, quiz_basis, n_questions)
-    qraw = call_ollama_with_fallback(qprompt)
-    questions = parse_questions(qraw)
     if questions:
         qpath = save_quiz(exam, kind, key, questions)
         print(f"  Saved {len(questions)} dedicated MCQs → {qpath.relative_to(BASE_DIR)}")
     else:
-        print("  [WARN] No MCQs parsed from the quiz response; skipping quiz save.")
+        print("  [WARN] No MCQs parsed; skipping quiz save.")
     print("  This source now has its own section + quiz (not folded into weekly papers).")
 
 
