@@ -219,16 +219,65 @@ def _inline(text: str) -> str:
     return staged
 
 
+_TABLE_SEP_RE = re.compile(r"^\|?[\s:|\-]+\|?$")  # | --- | --- | separator row
+
+
+def _split_table_row(line: str) -> list[str]:
+    inner = line.strip()
+    if inner.startswith("|"):
+        inner = inner[1:]
+    if inner.endswith("|"):
+        inner = inner[:-1]
+    return [c.strip() for c in inner.split("|")]
+
+
+def _render_table(rows: list[str]) -> str:
+    """Render a markdown pipe-table (the model sometimes emits these) as HTML."""
+    if not rows:
+        return ""
+    header = _split_table_row(rows[0])
+    body_start = 1
+    if len(rows) > 1 and _TABLE_SEP_RE.match(rows[1].strip()):
+        body_start = 2
+    thead = "<tr>" + "".join(f"<th>{_inline(c)}</th>" for c in header) + "</tr>"
+    body = []
+    for r in rows[body_start:]:
+        cells = _split_table_row(r)
+        body.append("<tr>" + "".join(f"<td>{_inline(c)}</td>" for c in cells) + "</tr>")
+    return (
+        '<div class="table-wrap"><table class="data-table">'
+        f"<thead>{thead}</thead><tbody>{''.join(body)}</tbody></table></div>"
+    )
+
+
 def parse_summary(markdown: str) -> tuple[list[Section], str | None]:
     sections: list[Section] = []
     current: Section | None = None
     note: str | None = None
 
+    def ensure_section() -> Section:
+        nonlocal current
+        if current is None:
+            current = Section(title="Highlights")
+            sections.append(current)
+        return current
+
     lines = markdown.splitlines()
-    for raw in lines:
-        line = raw.strip()
+    i = 0
+    while i < len(lines):
+        line = lines[i].strip()
         if not line:
+            i += 1
             continue
+        # A markdown table: consume all consecutive pipe rows as one block.
+        if line.startswith("|"):
+            table_rows = []
+            while i < len(lines) and lines[i].strip().startswith("|"):
+                table_rows.append(lines[i].strip())
+                i += 1
+            ensure_section().blocks.append(_render_table(table_rows))
+            continue
+        i += 1
         if line.startswith("# "):  # document H1 — handled by the page header
             continue
         if line in {"---", "----", "-----", "—"}:
@@ -251,17 +300,10 @@ def parse_summary(markdown: str) -> tuple[list[Section], str | None]:
             note = _inline(line[1:-1].strip())
             continue
         if line.startswith("- ") or line.startswith("* "):
-            text = line[2:].strip()
-            if current is None:
-                current = Section(title="Highlights")
-                sections.append(current)
-            current.blocks.append(f"<li>{_inline(text)}</li>")
+            ensure_section().blocks.append(f"<li>{_inline(line[2:].strip())}</li>")
             continue
         # Fallback: stray paragraph text.
-        if current is None:
-            current = Section(title="Highlights")
-            sections.append(current)
-        current.blocks.append(f"<p>{_inline(line)}</p>")
+        ensure_section().blocks.append(f"<p>{_inline(line)}</p>")
 
     # Drop empty sections (heading with no content).
     sections = [s for s in sections if s.blocks]
