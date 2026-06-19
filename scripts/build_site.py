@@ -485,7 +485,9 @@ def render_exam_page(group: "ExamGroup") -> str:
     cur_cycle = group.current
 
     if cur:
-        rows = "".join(_week_row(group.slug, w) for w in cur)
+        # The exam page lives at /exams/<slug>.html, so week links must go up one
+        # level ("../weeks/...") — a bare "weeks/..." would resolve to /exams/weeks/.
+        rows = "".join(_week_row(group.slug, w, "../") for w in cur)
         main_body = f'<div class="week-list">{rows}\n    </div>'
     else:
         main_body = (
@@ -505,7 +507,7 @@ def render_exam_page(group: "ExamGroup") -> str:
     if group.archived:
         blocks = []
         for c in group.archived:
-            arows = "".join(_week_row(group.slug, w) for w in c.weeks)
+            arows = "".join(_week_row(group.slug, w, "../") for w in c.weeks)
             blocks.append(
                 f"""
       <details class="archive-cycle">
