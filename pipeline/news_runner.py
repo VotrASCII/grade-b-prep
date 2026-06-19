@@ -166,6 +166,49 @@ def _within_lookback(item: dict, cutoff: date) -> bool:
     except ValueError:
         return True
 
+
+# ── dedup ledger ────────────────────────────────────────────────────────────
+# The news page shows a rolling week, and this runs daily, so most items repeat
+# across runs. We persist each item's finished summary/tags keyed by URL and only
+# spend the LLM on items we have NOT summarised before — re-summarising the same
+# article every day would waste effort (and money).
+
+SEEN_PATH = NEWS_DIR / "seen.json"
+
+
+def _item_key(item: dict) -> str:
+    url = (item.get("url") or "").split("?")[0].rstrip("/")
+    if url:
+        return url
+    return "t:" + re.sub(r"\W+", "", (item.get("title") or "").lower())[:80]
+
+
+def _load_seen() -> dict:
+    if SEEN_PATH.exists():
+        try:
+            data = json.loads(SEEN_PATH.read_text(encoding="utf-8"))
+            return data if isinstance(data, dict) else {}
+        except Exception:  # noqa: BLE001
+            return {}
+    return {}
+
+
+def _prune_seen(seen: dict, cutoff: date) -> dict:
+    """Drop ledger entries older than the lookback window so it stays bounded."""
+    kept = {}
+    for k, v in seen.items():
+        raw = v.get("date") if isinstance(v, dict) else None
+        if not raw:
+            kept[k] = v  # keep undated entries (can't age them out reliably)
+            continue
+        try:
+            if datetime.strptime(raw, "%Y-%m-%d").date() >= cutoff:
+                kept[k] = v
+        except ValueError:
+            kept[k] = v
+    return kept
+
+
 def run(use_llm: bool = True, lookback_days: int | None = None) -> Path:
     lookback = lookback_days if lookback_days is not None else NEWS_LOOKBACK_DAYS
     cutoff = date.today() - timedelta(days=lookback)
@@ -178,18 +221,50 @@ def run(use_llm: bool = True, lookback_days: int | None = None) -> Path:
     items = [it for it in items if _within_lookback(it, cutoff)]
     print(f"  {len(items)} items within lookback window")
 
-    print("\n[Step 2] Heuristic exam tagging ...")
+    print("\n[Step 2] Heuristic exam tagging (baseline) ...")
     for it in items:
         it["exams"] = heuristic_exams(it)
         it["topic"] = heuristic_topic(it)
         # Without the LLM, fall back to the RSS blurb as the summary.
         it["summary"] = it.get("summary") or ""
 
-    if use_llm and _ollama_available():
-        print("\n[Step 3] Refining tags with Ollama ...")
-        llm_refine(items)
+    # Reuse previously-finished summaries; only NEW items go to the LLM.
+    seen = _load_seen()
+    new_items: list[dict] = []
+    reused = 0
+    for it in items:
+        prev = seen.get(_item_key(it))
+        if isinstance(prev, dict) and prev.get("summary"):
+            it["summary"] = prev["summary"]
+            it["exams"] = prev.get("exams") or it["exams"]
+            it["topic"] = prev.get("topic") or it["topic"]
+            reused += 1
+        else:
+            new_items.append(it)
+    print(f"  {reused} already summarised (reused), {len(new_items)} new this run")
+
+    if new_items and use_llm and _ollama_available():
+        print(f"\n[Step 3] Refining {len(new_items)} NEW item(s) with Ollama ...")
+        llm_refine(new_items)
+    elif not new_items:
+        print("\n[Step 3] No new items — nothing to summarise, skipping LLM.")
     else:
-        print("\n[Step 3] Skipping LLM (unavailable or --no-llm); using heuristics.")
+        print("\n[Step 3] Skipping LLM (unavailable or --no-llm); new items use heuristics.")
+
+    # Update + prune the ledger with every current item's finished fields.
+    for it in items:
+        seen[_item_key(it)] = {
+            "title": it.get("title", ""),
+            "source": it.get("source", ""),
+            "url": it.get("url", ""),
+            "date": it.get("date"),
+            "summary": it.get("summary", ""),
+            "exams": it.get("exams", []),
+            "topic": it.get("topic", ""),
+        }
+    seen = _prune_seen(seen, cutoff)
+    NEWS_DIR.mkdir(parents=True, exist_ok=True)
+    SEEN_PATH.write_text(json.dumps(seen, indent=2, ensure_ascii=False), encoding="utf-8")
 
     items.sort(key=lambda it: (it.get("date") or "0000-00-00"), reverse=True)
 
