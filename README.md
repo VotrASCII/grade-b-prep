@@ -98,8 +98,16 @@ python run.py
 **Manual weekly mode**:
 
 ```bash
-python pipeline/daily_runner.py --week 1
+python pipeline/daily_runner.py --week 1                       # RBI Grade B (default)
+python pipeline/daily_runner.py --week 1 --exam upsc-banking   # UPSC / Banking
 ```
+
+`--exam` selects which exam's pipeline to run (weekly mode only). Each exam pulls
+its own sources (see *Multi-exam architecture*), uses its own GA weightage, and
+writes to `data/summaries/<exam-slug>/` and `data/questions/generated/<exam-slug>/`,
+which the site then renders under that exam's tab. The default exam (`rbi-grade-b`)
+keeps the original flat output layout. Run `scripts/build_site.py` afterwards to
+publish the new content.
 
 **Backfill missing weekly outputs from available cached content**:
 

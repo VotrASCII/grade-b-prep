@@ -27,6 +27,8 @@ from config import (
     CHUNK_CONTENT_WORDS,
     CHUNK_SUMMARY_WORDS,
     DAY_MAP,
+    DEFAULT_EXAM,
+    EXAMS,
     MAX_CONTENT_WORDS,
     MIN_DETAIL_CONTENT_COVERAGE,
     MIN_DETAIL_CONTENT_WORDS,
@@ -1605,6 +1607,204 @@ def _save_outputs(
     return summary_path, summary_pdf_path, questions_path, questions_pdf_path
 
 
+# ---------------------------------------------------------------------------
+# Generic multi-exam weekly path (additive — the RBI pib+rbi path is unchanged)
+# ---------------------------------------------------------------------------
+
+def _exam_source_scrapers() -> dict:
+    """Map source keys (from EXAMS[...]['sources']) to (range_scraper, label)."""
+    from scrapers.pib_scraper import scrape_pib_range
+    from scrapers.rbi_scraper import scrape_rbi_range
+    from scrapers.econsurvey_scraper import scrape_econsurvey_range
+
+    return {
+        "pib": (scrape_pib_range, "PIB Press Releases"),
+        "rbi": (scrape_rbi_range, "RBI Circulars & Press Releases"),
+        # All-ministry PIB reuses the same scraper (it already queries every
+        # ministry); kept as a distinct key so an exam can opt into broad PIB.
+        "pib_all": (scrape_pib_range, "PIB Press Releases (all ministries)"),
+        "econsurvey": (scrape_econsurvey_range, "Economic Survey / Yojana"),
+    }
+
+
+def _generic_block(item: dict, label: str) -> str:
+    title = item.get("title") or item.get("subject") or ""
+    parts = [f"[{label}] {item.get('date', '')} — {title}"]
+    if item.get("department"):
+        parts.append(f"  Department: {item['department']}")
+    if item.get("url"):
+        parts.append(f"  URL: {item['url']}")
+    if item.get("content"):
+        parts.append("  DETAIL CONTENT:")
+        parts.append(item["content"])
+    return "\n".join(parts)
+
+
+def _load_or_scrape_week_exam(
+    slug: str,
+    sources: list[str],
+    start_date: date,
+    end_date: date,
+    output_key: str,
+    refresh_cache: bool,
+) -> dict[str, list[dict]]:
+    reg = _exam_source_scrapers()
+    cache_key = f"{slug}/{output_key}"   # namespace cache per exam
+    result: dict[str, list[dict]] = {}
+    to_scrape: dict[str, object] = {}
+
+    for src in sources:
+        if src not in reg:
+            print(f"  [WARN] Unknown source '{src}' for {slug}; skipping.")
+            continue
+        items = None if refresh_cache else _load_period_scrape_cache(src, cache_key)
+        if items is None:
+            to_scrape[src] = reg[src][0]
+        else:
+            result[src] = items
+
+    if to_scrape:
+        with ThreadPoolExecutor(max_workers=len(to_scrape)) as executor:
+            future_to_source = {
+                executor.submit(fn, start_date, end_date): src
+                for src, fn in to_scrape.items()
+            }
+            for future in as_completed(future_to_source):
+                src = future_to_source[future]
+                try:
+                    items = future.result()
+                    if items:
+                        _save_period_scrape_cache(src, cache_key, items)
+                except Exception as e:  # noqa: BLE001
+                    print(f"  [ERROR] weekly {src} scraper: {e}")
+                    items = []
+                result[src] = items or []
+
+    return {src: result.get(src, []) for src in sources if src in reg}
+
+
+def _prepare_prompt_content_exam(
+    exam_cfg: dict,
+    source_items: dict[str, list[dict]],
+    period_name: str,
+    output_key: str,
+) -> str:
+    reg = _exam_source_scrapers()
+    blocks: list[str] = []
+    usable_total = 0
+    for src, items in source_items.items():
+        usable = _usable_detail_items(items)
+        usable_total += len(usable)
+        print(f"  {reg[src][1]}: {len(usable)}/{len(items)} usable detail items")
+        if not usable:
+            continue
+        blocks.append(f"=== {reg[src][1]} ===")
+        blocks.extend(_generic_block(it, src.upper()) for it in usable)
+
+    if usable_total == 0:
+        raise RuntimeError(
+            f"No usable detail content from any source ({', '.join(source_items)}) "
+            f"for {period_name}. Nothing to summarise."
+        )
+
+    combined = "\n\n".join(blocks)
+    raw_words = len(combined.split())
+    final_budget = _token_budget_words()
+    print(f"  Raw merged content: {raw_words} words (budget: {final_budget})")
+    if raw_words <= final_budget:
+        return combined
+
+    summarized = _summarize_large_content(
+        blocks, period_name, None, None, output_key=f"{exam_cfg['slug']}/{output_key}"
+    )
+    if len(summarized.split()) > final_budget:
+        summarized = _truncate_to_words(summarized, final_budget)
+    print(f"  Condensed content: {len(summarized.split())} words")
+    return summarized
+
+
+def _save_outputs_exam(
+    exam_cfg: dict,
+    summary: str,
+    questions: list[dict],
+    period_name: str,
+    output_key: str,
+    generated_label: str,
+) -> tuple[Path, Path]:
+    slug = exam_cfg["slug"]
+    name = exam_cfg["name"]
+    summaries_dir = SUMMARIES_DIR / slug
+    gen_q_dir = GEN_Q_DIR / slug
+    summaries_dir.mkdir(parents=True, exist_ok=True)
+    gen_q_dir.mkdir(parents=True, exist_ok=True)
+
+    summary_path = summaries_dir / f"{output_key}.md"
+    summary_path.write_text(
+        f"# {name} GA Summary — {period_name}\n\n"
+        f"_Generated on: {generated_label}_\n\n{summary}",
+        encoding="utf-8",
+    )
+    print(f"  Summary saved → {summary_path}")
+
+    questions_path = gen_q_dir / f"{output_key}-qs.json"
+    questions_path.write_text(json.dumps(questions, indent=2, ensure_ascii=False), encoding="utf-8")
+    print(f"  Questions saved → {questions_path} ({len(questions)} MCQs)")
+    return summary_path, questions_path
+
+
+def _run_week_exam(
+    week: int,
+    exam: str,
+    refresh_cache: bool = False,
+) -> None:
+    from config import EXAMS
+
+    cfg = EXAMS[exam]
+    start_date, end_date = get_week_period(week)
+    period_name = f"Week {week} ({start_date:%d %b %Y} - {end_date:%d %b %Y})"
+    output_key = _period_key(start_date, end_date)
+
+    print("=" * 60)
+    print(f"Weekly Runner [{cfg['name']}] — Week {week} → {start_date:%d %b %Y} to {end_date:%d %b %Y}")
+    print(f"  Sources: {', '.join(cfg['sources'])}")
+    print("=" * 60)
+    t_start = time.time()
+
+    print("\n[Step 1] Loading/scraping exam sources ...")
+    source_items = _load_or_scrape_week_exam(
+        cfg["slug"], cfg["sources"], start_date, end_date, output_key, refresh_cache
+    )
+
+    print("\n[Step 2] Preparing prompt content ...")
+    combined = _prepare_prompt_content_exam(cfg, source_items, period_name, output_key)
+
+    print("\n[Step 3] Building prompt & calling Ollama ...")
+    t3 = time.time()
+    prompt = build_prompt(combined, period_name, exam=exam)
+    response = call_ollama_with_fallback(prompt)
+    print(f"  Ollama response: {len(response)} chars  ({time.time()-t3:.1f}s)")
+    raw_key = f"{cfg['slug']}-{output_key}"
+    _save_raw_ollama_response(None, None, response, output_key=raw_key)
+
+    print("\n[Step 4] Parsing response ...")
+    summary, questions_raw = split_response(response)
+    summary = clean_summary_markdown(summary)
+    questions = parse_questions(questions_raw)
+    questions = complete_missing_questions(
+        questions, combined, summary, period_name, None, None, output_key=raw_key
+    )
+    questions = normalize_questions(questions)
+    print(f"  Summary: {len(summary)} chars | Questions parsed: {len(questions)}")
+
+    print("\n[Step 5] Saving outputs ...")
+    _save_outputs_exam(cfg, summary, questions, period_name, output_key, f"Week {week} pipeline")
+
+    print(f"\n{'='*60}")
+    print(f"[{cfg['name']}] Week {week} complete in {time.time()-t_start:.1f}s")
+    print(f"  Questions gen  : {len(questions)}")
+    print(f"{'='*60}")
+
+
 def run_day(day: int, refresh_cache: bool = False, email_to: str | None = None) -> None:
     if day not in DAY_MAP:
         print(f"[ERROR] Day {day} not in DAY_MAP (valid: {sorted(DAY_MAP)}).")
@@ -1741,7 +1941,18 @@ def run_day(day: int, refresh_cache: bool = False, email_to: str | None = None) 
     print(f"{'='*60}")
 
 
-def run_week(week: int, refresh_cache: bool = False, email_to: str | None = None) -> None:
+def run_week(
+    week: int,
+    refresh_cache: bool = False,
+    email_to: str | None = None,
+    exam: str = DEFAULT_EXAM,
+) -> None:
+    # Non-default exams use the additive generic source path; the default exam
+    # (RBI Grade B) keeps the original, proven PIB+RBI path below unchanged.
+    if exam != DEFAULT_EXAM:
+        _run_week_exam(week, exam, refresh_cache=refresh_cache)
+        return
+
     start_date, end_date = get_week_period(week)
     period_name = f"Week {week} ({start_date:%d %b %Y} - {end_date:%d %b %Y})"
     output_key = _period_key(start_date, end_date)
@@ -1860,13 +2071,26 @@ if __name__ == "__main__":
         action="store_true",
         help="Email already-generated summary/question PDFs without running the pipeline",
     )
+    parser.add_argument(
+        "--exam",
+        default=DEFAULT_EXAM,
+        choices=list(EXAMS.keys()),
+        help="Which exam to run (weekly mode only). Default: %(default)s",
+    )
     args = parser.parse_args()
+    if args.exam != DEFAULT_EXAM and args.week is None:
+        parser.error("--exam is only supported with --week (weekly mode).")
     if args.email_existing:
         if args.week is not None:
             email_existing_week_pdfs(args.week, args.email_to)
         else:
             email_existing_pdfs(args.day, args.email_to)
     elif args.week is not None:
-        run_week(args.week, refresh_cache=args.refresh_cache, email_to=args.email_to or None)
+        run_week(
+            args.week,
+            refresh_cache=args.refresh_cache,
+            email_to=args.email_to or None,
+            exam=args.exam,
+        )
     else:
         run_day(args.day, refresh_cache=args.refresh_cache, email_to=args.email_to or None)
