@@ -110,20 +110,31 @@ def _publish_site() -> None:
         print(f"  [WARN] git push exited with code {push.returncode}")
 
 
-def _run_week(week: int) -> None:
+def _run_week(week: int) -> bool:
+    """Run the weekly pipeline for ALL active exams. Returns True if at least one
+    exam produced output (so the caller can decide whether to advance the week)."""
     start_date, end_date = get_week_period(week)
     print(
         f"\n[{datetime.now().strftime('%Y-%m-%d %H:%M:%S')}] "
-        f"Running Week {week}: {start_date:%Y-%m-%d} to {end_date:%Y-%m-%d} ..."
+        f"Running Week {week} for all active exams: "
+        f"{start_date:%Y-%m-%d} to {end_date:%Y-%m-%d} ..."
     )
+    # daily_runner --all-exams runs each active exam independently, retries
+    # transient failures, and skips an exam that still fails (exit 0 if any exam
+    # succeeded, exit 1 only if every exam failed).
     result = subprocess.run(
-        [sys.executable, str(BASE_DIR / "pipeline" / "daily_runner.py"), "--week", str(week)],
+        [
+            sys.executable,
+            str(BASE_DIR / "pipeline" / "daily_runner.py"),
+            "--week", str(week), "--all-exams",
+        ],
         cwd=str(BASE_DIR),
     )
     if result.returncode != 0:
-        print(f"  [ERROR] daily_runner.py exited with code {result.returncode}")
-    else:
-        print(f"  Week {week} complete.")
+        print(f"  [ERROR] Week {week}: every exam failed (exit {result.returncode}).")
+        return False
+    print(f"  Week {week} pipeline complete.")
+    return True
 
 
 def run_current_week(publish: bool = False) -> bool:
@@ -150,14 +161,20 @@ def run_current_week(publish: bool = False) -> bool:
         )
         return True
 
-    _run_week(week)
+    produced = _run_week(week)
+    if not produced:
+        print(
+            f"Week {week}: no exam produced output this run (likely a transient "
+            "scrape/network issue). Staying on this week; will retry next tick."
+        )
+        return True
 
     state["current_week"] = week + 1
     _save_state(state)
 
     # Rebuild the published site after each completed week so new content goes live.
-    # Also refresh the news digest so the site's "In the news" page stays current.
-    _rebuild_site(publish=publish, refresh_news=True)
+    # News has its own daily trigger (news_job), so don't refetch it here.
+    _rebuild_site(publish=publish, refresh_news=False)
 
     if state["current_week"] > total_weeks:
         if OPEN_ENDED_SCHEDULE:
@@ -174,12 +191,45 @@ def run_current_week(publish: bool = False) -> bool:
     return True
 
 
+def _catch_up_weeks(publish: bool) -> None:
+    """Process every completed-but-unprocessed week (all exams), then stop once the
+    current week is still in progress. Used at startup and by the weekly trigger."""
+    while True:
+        before = _load_state().get("current_week", 1)
+        cont = run_current_week(publish=publish)
+        after = _load_state().get("current_week", 1)
+        if after == before:   # nothing processed (week incomplete or transient fail)
+            break
+        if not cont:          # finite schedule exhausted
+            break
+
+
+def weekly_job(publish: bool = True) -> None:
+    """Monday 00:00 trigger: ingest the just-completed week (Mon–Sun) for every active
+    exam, refresh yearly reference sources, rebuild, and push so Pages redeploys."""
+    print(f"\n[{datetime.now():%Y-%m-%d %H:%M:%S}] Weekly trigger ...")
+    _refresh_static()              # Economic Survey (yearly) — idempotent, cheap if done
+    _catch_up_weeks(publish=publish)
+
+
+def news_job(publish: bool = True) -> None:
+    """Daily 00:00 trigger: refresh the news digest (only new items are summarised —
+    see news_runner dedup), rebuild, and push so the news page redeploys."""
+    print(f"\n[{datetime.now():%Y-%m-%d %H:%M:%S}] Daily news trigger ...")
+    _rebuild_site(publish=publish, refresh_news=True)
+
+
 def main() -> None:
     parser = argparse.ArgumentParser(description="RBI Grade B prep scheduler")
     parser.add_argument(
         "--run-now",
         action="store_true",
-        help="Skip the scheduler and immediately run the current weekly period",
+        help="Skip the scheduler and immediately run the current completed week (all exams)",
+    )
+    parser.add_argument(
+        "--news-now",
+        action="store_true",
+        help="Skip the scheduler and immediately refresh + publish the news digest",
     )
     parser.add_argument(
         "--publish",
@@ -202,42 +252,35 @@ def main() -> None:
         _rebuild_site(publish=args.publish, refresh_news=args.with_news)
         return
 
+    if args.news_now:
+        news_job(publish=args.publish)
+        return
+
     if args.run_now:
-        run_current_week(publish=args.publish)
+        # Manual: process the current completed week now (honours --publish).
+        weekly_job(publish=args.publish)
         return
 
-    # Auto-scheduled mode: run immediately once, then schedule every N hours.
-    state = _load_state()
-    if (
-        not OPEN_ENDED_SCHEDULE
-        and state.get("current_week", 1) > total_configured_weeks()
-    ):
-        print("All configured weekly periods processed.")
-        return
+    # ── Auto-scheduled mode ─────────────────────────────────────────────────
+    # Weekly: every Monday 00:00 → ingest the just-completed week (Mon–Sun) for all
+    #         active exams → rebuild → push (Pages redeploys).
+    # News:   every day   00:00 → refresh the digest (only new items summarised) →
+    #         rebuild → push.
+    # Auto mode always publishes — the whole point is to keep the live site current.
+    publish = True
 
-    print("RBI Grade B Prep - Weekly Auto Scheduler")
-    print(f"State: {state}")
-    print(
-        "Running the current weekly period immediately, then scheduling "
-        f"every {SCHEDULER_INTERVAL_HOURS} hours..."
-    )
+    print("Govt Exams Prep — Scheduler")
+    print(f"State: {_load_state()}")
+    print("Schedule: weekly = Mon 00:00 (all exams) · news = daily 00:00")
 
-    more = run_current_week(publish=args.publish)
-    if not more:
-        return
-
-    def scheduled_job() -> None:
-        still_more = run_current_week(publish=args.publish)
-        if not still_more:
-            return schedule.CancelJob
-
-    schedule.every(SCHEDULER_INTERVAL_HOURS).hours.do(scheduled_job)
-
-    # Static sources (Economic Survey — yearly; Yojana — monthly): try once now,
-    # then check daily. Idempotent, so a new ES edition or month's Yojana is picked
-    # up automatically; failed downloads simply retry until the PDF is reachable.
+    # Catch up at startup: process any completed weeks missed while we were down,
+    # and make the news page current immediately.
     _refresh_static()
-    schedule.every().day.at("05:30").do(_refresh_static)
+    _catch_up_weeks(publish=publish)
+    news_job(publish=publish)
+
+    schedule.every().monday.at("00:00").do(weekly_job, publish=publish)
+    schedule.every().day.at("00:00").do(news_job, publish=publish)
 
     print("Scheduler active. Press Ctrl+C to exit.")
     while True:
