@@ -233,6 +233,11 @@ def _inline(text: str) -> str:
     staged = re.sub(r"\*\*(.+?)\*\*", _stash_bold, text)
     staged = _escape(staged)
 
+    # Honour explicit line breaks the model emits inside cells/lines (<br>, <br/>,
+    # <br />) — after escaping they appear as &lt;br&gt;, so map those back to real
+    # breaks instead of leaking the literal tag text.
+    staged = re.sub(r"&lt;br\s*/?&gt;", "<br>", staged)
+
     # Highlight figures (dates, money, percentages) for the data-led look.
     for pattern in _FIG_PATTERNS:
         staged = pattern.sub(lambda m: f'<span class="fig">{m.group(0)}</span>', staged)
@@ -265,10 +270,16 @@ def _split_table_row(line: str) -> list[str]:
 
 
 def _render_table(rows: list[str]) -> str:
-    """Render a markdown pipe-table (the model sometimes emits these) as HTML."""
+    """Render a markdown pipe-table (the model sometimes emits these) as HTML.
+
+    The model often emits *ragged* tables — some rows carry both columns, others
+    fold everything into a single cell. Under a fixed layout a lone cell would be
+    crushed into the first column, so a row with fewer cells than the header has
+    its last cell span the remaining columns (colspan)."""
     if not rows:
         return ""
     header = _split_table_row(rows[0])
+    ncols = max(1, len(header))
     body_start = 1
     if len(rows) > 1 and _TABLE_SEP_RE.match(rows[1].strip()):
         body_start = 2
@@ -276,7 +287,15 @@ def _render_table(rows: list[str]) -> str:
     body = []
     for r in rows[body_start:]:
         cells = _split_table_row(r)
-        body.append("<tr>" + "".join(f"<td>{_inline(c)}</td>" for c in cells) + "</tr>")
+        tds = []
+        for j, c in enumerate(cells):
+            # Last cell of a short row spans the columns it's missing.
+            if j == len(cells) - 1 and len(cells) < ncols:
+                span = ncols - len(cells) + 1
+                tds.append(f'<td colspan="{span}">{_inline(c)}</td>')
+            else:
+                tds.append(f"<td>{_inline(c)}</td>")
+        body.append("<tr>" + "".join(tds) + "</tr>")
     return (
         '<div class="table-wrap"><table class="data-table">'
         f"<thead>{thead}</thead><tbody>{''.join(body)}</tbody></table></div>"
@@ -333,9 +352,16 @@ def parse_summary(markdown: str) -> tuple[list[Section], str | None]:
             current = Section(title=line[3:].strip())
             sections.append(current)
             continue
-        if line.startswith("### "):
-            # Buffer — only emitted when actual content follows (prevents blank headings).
-            pending_sub = f'<h3 class="sub">{_inline(line[4:].strip())}</h3>' if current is not None else None
+        # Any deeper heading (###, ####, …) becomes a sub-heading. Buffer it so it's
+        # only emitted when actual content follows (prevents blank headings) and so
+        # ####/##### don't leak through as literal "#### ..." paragraph text.
+        m_sub = re.match(r"^#{3,}\s+(.*)$", line)
+        if m_sub:
+            heading = m_sub.group(1).strip()
+            pending_sub = (
+                f'<h3 class="sub">{_inline(heading)}</h3>'
+                if current is not None and heading else None
+            )
             continue
         # Trailing provenance note rendered in italics, e.g. _All bullet points…_
         if line.startswith("_") and line.endswith("_") and len(line) > 2:

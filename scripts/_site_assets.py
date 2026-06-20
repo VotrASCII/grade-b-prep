@@ -186,21 +186,26 @@ main{max-width:var(--max);margin:0 auto;padding:0 clamp(1.25rem,5vw,3.5rem)}
 .src-card:hover .src-go{color:var(--accent)}
 
 /* ---- data tables (model sometimes emits markdown tables) ---- */
-.table-wrap{overflow-x:auto;margin:1rem 0}
+.table-wrap{overflow-x:auto;margin:1rem 0;-webkit-overflow-scrolling:touch}
 .data-table{
   width:100%;border-collapse:collapse;font-size:.9rem;line-height:1.5;
+  table-layout:fixed;  /* share width across columns so wide cells wrap, not overflow */
 }
 .data-table th,.data-table td{
   text-align:left;vertical-align:top;padding:.6rem .8rem;
   border-bottom:1px solid var(--line-soft);
+  overflow-wrap:anywhere;word-break:normal;hyphens:auto;
 }
 .data-table thead th{
   font-family:'JetBrains Mono',monospace;font-size:.72rem;font-weight:500;
   letter-spacing:.04em;text-transform:uppercase;color:var(--ink-soft);
-  border-bottom:1px solid var(--line);white-space:nowrap;
+  border-bottom:1px solid var(--line);
 }
 .data-table tbody tr:hover{background:var(--bg-2)}
-.data-table td:first-child{white-space:nowrap;color:var(--ink-soft);font-variant-numeric:tabular-nums}
+/* First column is the row label — give it a sensible cap so the data column keeps room. */
+.data-table td:first-child{color:var(--ink-soft);font-variant-numeric:tabular-nums}
+.data-table th:first-child,.data-table td:first-child{width:34%}
+.data-table td br{content:"";display:block;margin-top:.25rem}
 
 /* ---- archive ---- */
 .archive{margin-top:5rem}
