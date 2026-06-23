@@ -242,15 +242,16 @@ def _inline(text: str) -> str:
     for pattern in _FIG_PATTERNS:
         staged = pattern.sub(lambda m: f'<span class="fig">{m.group(0)}</span>', staged)
 
-    # Star marker for perennial high-priority items.
-    staged = staged.replace("⭐", '<span class="star" aria-label="high priority">★</span>')
+    # Star marker for perennial high-priority items. The model emits ⭐, ★ or ☆
+    # interchangeably — render them all as the one styled marker.
+    staged = re.sub(r"[⭐★☆]", '<span class="star" aria-label="high priority">★</span>', staged)
 
     # Restore bold spans (escaped, with figure highlighting inside).
     def _restore_bold(m: re.Match) -> str:
         inner = _escape(bold_spans[int(m.group(1))])
         for pattern in _FIG_PATTERNS:
             inner = pattern.sub(lambda mm: f'<span class="fig">{mm.group(0)}</span>', inner)
-        inner = inner.replace("⭐", '<span class="star">★</span>')
+        inner = re.sub(r"[⭐★☆]", '<span class="star">★</span>', inner)
         return f"<strong>{inner}</strong>"
 
     staged = re.sub(r"\x00B(\d+)\x00", _restore_bold, staged)
@@ -302,7 +303,35 @@ def _render_table(rows: list[str]) -> str:
     )
 
 
+def _normalize_summary_headings(markdown: str) -> str:
+    """Smooth over the two heading styles the model alternates between.
+
+    Some weeks open with a ``## PART 1 – GA SUMMARY`` title and then use ``###``
+    for each topic (so every topic would collapse into one section as a sub-heading);
+    others skip the banner and use ``##`` for topics directly. Drop any PART-1 banner
+    in either heading or bold form, and — when that leaves no ``##`` topic sections but
+    there are ``###`` ones — promote the ``###`` topics to ``##`` so both styles render
+    as the same flat list of sections.
+    """
+    def _is_part1(line: str) -> bool:
+        s = line.strip().lstrip("#").strip()
+        return bool(re.match(r"^\*?\*?PART\s*1", s, re.IGNORECASE))
+
+    # Unwrap headings the model occasionally wraps in bold, e.g. "**## Economy**".
+    kept = [
+        re.sub(r"^\s*\*\*\s*(#{1,6}\s+.*?)\s*\*\*\s*$", r"\1", l)
+        for l in markdown.splitlines()
+    ]
+    kept = [l for l in kept if not _is_part1(l)]
+    has_h2 = any(re.match(r"^##\s+\S", l.strip()) for l in kept)
+    has_h3 = any(re.match(r"^###\s+\S", l.strip()) for l in kept)
+    if not has_h2 and has_h3:
+        kept = [re.sub(r"^(\s*)#{3,}(\s+\S)", r"\1##\2", l) for l in kept]
+    return "\n".join(kept)
+
+
 def parse_summary(markdown: str) -> tuple[list[Section], str | None]:
+    markdown = _normalize_summary_headings(markdown)
     sections: list[Section] = []
     current: Section | None = None
     note: str | None = None

@@ -119,10 +119,16 @@ events from this period. This is study material a candidate will read to underst
 the news — not just memorise it — so write in clear explanatory prose, not terse
 fragments.
 
-Use exactly these sections:
+Use exactly these sections, each as a level-2 markdown heading (## ), in this order:
 {sections_str}
 
 Rules for the summary:
+- Begin PART 1 directly with the first "## " section heading. Do NOT add a "PART 1"
+  title line, a preamble, or any introductory paragraph before the first section.
+- Use "## " (level-2) for every section heading exactly as listed above. Do NOT use
+  "###" or deeper, do NOT nest sections, and do NOT add sections of your own.
+- Do NOT insert horizontal rules ("---") between or within sections.
+- Use the ⭐ emoji to flag priority items — never "★" or "☆", and no separate legend line.
 - 50 bullet points per section max
 - Each bullet is 2–4 complete sentences. Start with the headline fact in **bold**,
   then explain it: what was announced, the key figures/dates/names, WHO is involved

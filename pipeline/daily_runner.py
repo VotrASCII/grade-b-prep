@@ -2025,8 +2025,16 @@ def _run_week_exam(
             from pipeline.static_runner import weekly_reference_questions
             ref_qs = weekly_reference_questions(exam, WEEKLY_REFERENCE_QUESTIONS)
             if ref_qs:
-                print(f"  + {len(ref_qs)} Economic Survey question(s) folded in (random sections).")
-                questions = questions + ref_qs
+                # ES questions REPLACE weekly ones (they are not extra): keep the paper
+                # at EXPECTED_QUESTION_COUNT total. The dropped weekly questions are the
+                # tail — i.e. the lowest-priority topics — while ES takes their place.
+                keep = max(0, EXPECTED_QUESTION_COUNT - len(ref_qs))
+                dropped = max(0, len(questions) - keep)
+                print(
+                    f"  + {len(ref_qs)} Economic Survey question(s) folded in "
+                    f"(replacing {dropped} weekly Q → {keep + len(ref_qs)} total)."
+                )
+                questions = questions[:keep] + ref_qs
         except Exception as e:  # noqa: BLE001
             print(f"  [WARN] Economic Survey weekly questions skipped: {e}")
 
