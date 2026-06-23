@@ -80,7 +80,8 @@ apply (drop headings with nothing to say):
 
 Preserve exact figures, percentages, scheme names, targets, years, rankings,
 institutions and definitions. Do NOT invent facts not present in the text. Do NOT
-write MCQs.
+write MCQs. Summarise any statistical/regression results in plain language — do NOT
+copy raw coefficient/p-value tables. Do NOT refer to this excerpt as a "chunk".
 
 RAW CHUNK {index}/{total}:
 {chunk}
@@ -122,7 +123,10 @@ def _condense_large_source(exam: str, kind: str, key: str, source_text: str, top
         cpath.write_text(json.dumps({"hash": chash, "notes": note}, ensure_ascii=False), encoding="utf-8")
         notes.append(note)
 
-    return "\n\n".join(f"=== Notes: chunk {i} ===\n{n}" for i, n in enumerate(notes, 1))
+    # Use a neutral separator: anything containing the word "chunk" tends to be
+    # echoed into the final summary by the LLM ("as per chunk 4"), which is
+    # meaningless to a reader.
+    return "\n\n".join(f"=== Notes part {i} ===\n{n}" for i, n in enumerate(notes, 1))
 
 
 def _build_prompt(exam: str, kind: str, key: str, topics: list[str], source_text: str) -> str:
@@ -231,8 +235,15 @@ Write a thorough, standalone summary of ONLY the **{section}** part of the Surve
 - Use only facts in the notes below that relate to {section}.
 - Be comprehensive and specific: keep exact figures, percentages, scheme names,
   targets, years, rankings, institutions, committees and definitions.
-- Markdown bullet points (use short sub-bullets where useful). This is ONE chapter of
-  a full Economic Survey — aim for depth: many points, not a handful.
+- Markdown bullet points, depth over brevity (this is ONE chapter of a full Survey).
+  Use "-" for EVERY bullet, including sub-bullets — never "–", "—", "*" or "•".
+  Indent a sub-bullet by exactly two spaces under its parent "-" bullet.
+- If you number sub-headings, use plain "1.", "2." — never emoji digits (1️⃣) or
+  circled numerals (①).
+- Write for a reader: do NOT mention "chunk", note numbers, or the internal structure
+  of these notes. Do NOT dump raw regression coefficients, p-values or econometric
+  model output (e.g. "FRF regression: debt lag = +0.063, p < 0.05"); state the
+  plain-language finding instead (e.g. "debt is on a sustainable path").
 - Do NOT write MCQs. Do NOT repeat the section title as a heading (it is added for you).
 - If the notes hold little on this section, summarise what is present (don't invent).
 

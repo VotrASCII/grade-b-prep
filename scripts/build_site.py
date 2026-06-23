@@ -221,8 +221,18 @@ def _escape(text: str) -> str:
     return html.escape(text, quote=False)
 
 
+_CHUNK_REF_RE = re.compile(
+    r"\s*\((?:from |as per )?chunks?\b[^)]*\)"  # "(from chunk 7)", "(chunks 1-16)"
+    r"|,?\s*\bchunks?\s+\d+",                    # bare ", chunk 4"
+    re.IGNORECASE,
+)
+
+
 def _inline(text: str) -> str:
     """Render inline markdown for one line of summary text."""
+    # Strip internal map-reduce artefacts that sometimes leak into the prose,
+    # e.g. "(from chunk 7)" / "(chunks 1-16)" — these mean nothing to a reader.
+    text = _CHUNK_REF_RE.sub("", text)
     # Pull out **bold** spans first using placeholders so escaping is clean.
     bold_spans: list[str] = []
 
@@ -303,6 +313,17 @@ def _render_table(rows: list[str]) -> str:
     )
 
 
+def _plain_digits(s: str) -> str:
+    """Turn keycap emoji digits (1️⃣) and circled numerals (①) into plain "N."."""
+    s = re.sub(r"([0-9])️?⃣", r"\1.", s)  # 1️⃣ → 1.
+    s = re.sub(
+        r"[①-⑳]",
+        lambda m: f"{ord(m.group(0)) - 0x2460 + 1}.",  # ①..⑳ → 1...20.
+        s,
+    )
+    return s.replace(" ", " ")  # narrow no-break space the model pairs with keycaps
+
+
 def _normalize_summary_headings(markdown: str) -> str:
     """Smooth over the two heading styles the model alternates between.
 
@@ -322,6 +343,10 @@ def _normalize_summary_headings(markdown: str) -> str:
         re.sub(r"^\s*\*\*\s*(#{1,6}\s+.*?)\s*\*\*\s*$", r"\1", l)
         for l in markdown.splitlines()
     ]
+    # Some sections number sub-headings with keycap/circled emoji digits
+    # (e.g. "### 1️⃣ Health"); others use plain "### 1. Health". Normalise the
+    # emoji variants to plain "N." so numbering looks the same across sections.
+    kept = [_plain_digits(l) for l in kept]
     kept = [l for l in kept if not _is_part1(l)]
     has_h2 = any(re.match(r"^##\s+\S", l.strip()) for l in kept)
     has_h3 = any(re.match(r"^###\s+\S", l.strip()) for l in kept)
@@ -353,7 +378,8 @@ def parse_summary(markdown: str) -> tuple[list[Section], str | None]:
     lines = markdown.splitlines()
     i = 0
     while i < len(lines):
-        line = lines[i].strip()
+        raw = lines[i]
+        line = raw.strip()
         if not line:
             i += 1
             continue
@@ -396,9 +422,17 @@ def parse_summary(markdown: str) -> tuple[list[Section], str | None]:
         if line.startswith("_") and line.endswith("_") and len(line) > 2:
             note = _inline(line[1:-1].strip())
             continue
-        if line.startswith("- ") or line.startswith("* "):
+        # List item. The model uses -, *, •, – (en-dash) and — (em-dash)
+        # interchangeably as bullet markers, and indents sub-bullets by two
+        # spaces. Treat an indented item as nested under the previous one.
+        m_li = re.match(r"^[-*•–—]\s+(.*)$", line)
+        if m_li:
             flush_sub()
-            ensure_section().blocks.append(f"<li>{_inline(line[2:].strip())}</li>")
+            indent = len(raw) - len(raw.lstrip(" "))
+            cls = ' class="sub"' if indent >= 2 else ""
+            ensure_section().blocks.append(
+                f"<li{cls}>{_inline(m_li.group(1).strip())}</li>"
+            )
             continue
         # Fallback: stray paragraph text.
         flush_sub()
@@ -727,17 +761,34 @@ def render_exam_page(group: "ExamGroup") -> str:
 
 
 def _render_section(index: int, section: Section) -> str:
-    # Separate <li> blocks (wrapped in <ul>) from standalone blocks.
+    # Separate list blocks (wrapped in <ul>) from standalone blocks. Items marked
+    # <li class="sub"> are nested into a child <ul> inside the preceding item.
     parts: list[str] = []
     buffer: list[str] = []
 
     def flush() -> None:
-        if buffer:
-            parts.append(f'<ul class="facts">{"".join(buffer)}</ul>')
-            buffer.clear()
+        if not buffer:
+            return
+        items: list[str] = []
+        for li in buffer:
+            if li.startswith('<li class="sub">'):
+                child = li[len('<li class="sub">'):-len("</li>")]
+                if items:
+                    parent = items[-1][:-len("</li>")]  # reopen the parent <li>
+                    if parent.endswith("</ul>"):
+                        parent = parent[:-len("</ul>")] + f"<li>{child}</li></ul>"
+                    else:
+                        parent += f'<ul class="facts"><li>{child}</li></ul>'
+                    items[-1] = parent + "</li>"
+                else:  # orphan sub-bullet with no parent — promote to top level
+                    items.append(f"<li>{child}</li>")
+            else:
+                items.append(li)
+        parts.append(f'<ul class="facts">{"".join(items)}</ul>')
+        buffer.clear()
 
     for block in section.blocks:
-        if block.startswith("<li>"):
+        if block.startswith("<li"):
             buffer.append(block)
         else:
             flush()
