@@ -241,6 +241,11 @@ def _inline(text: str) -> str:
         return f"\x00B{len(bold_spans) - 1}\x00"
 
     staged = re.sub(r"\*\*(.+?)\*\*", _stash_bold, text)
+
+    # Stash *single-asterisk* spans after bold is extracted so patterns don't overlap.
+    # The LLM uses *name* for award/scheme titles; treat them as bold on this site.
+    staged = re.sub(r"\*([^*]+)\*", _stash_bold, staged)
+
     staged = _escape(staged)
 
     # Honour explicit line breaks the model emits inside cells/lines (<br>, <br/>,
