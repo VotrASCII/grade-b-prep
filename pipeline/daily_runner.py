@@ -2016,6 +2016,9 @@ def _run_week_exam(
     questions = normalize_questions(questions)
     print(f"  Summary: {len(summary)} chars | Questions parsed: {len(questions)}")
 
+    from pipeline.validator import check_summary
+    check_summary(summary, label=f"{cfg['name']} Week {week}")
+
     # Fold a few fresh Economic Survey questions into the weekly paper (only for exams
     # that have an ES reference source). Random sections, distinct from the stored ES
     # quiz, grouped under their own heading on the page.
@@ -2267,6 +2270,9 @@ def run_week(
     )
     questions = normalize_questions(questions)
     print(f"  Summary: {len(summary)} chars | Questions parsed: {len(questions)}")
+
+    from pipeline.validator import check_summary
+    check_summary(summary, label=f"RBI Week {week}")
 
     print("\n[Step 5] Saving outputs ...")
     _summary_path, summary_pdf_path, _questions_path, questions_pdf_path = _save_outputs(

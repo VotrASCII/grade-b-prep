@@ -205,15 +205,15 @@ def _catch_up_weeks(publish: bool) -> None:
 
 
 def weekly_job(publish: bool = True) -> None:
-    """Monday 00:00 trigger: ingest the just-completed week (Mon–Sun) for every active
-    exam, refresh yearly reference sources, rebuild, and push so Pages redeploys."""
+    """Monday 01:00 IST trigger: ingest the just-completed week (Mon–Sun) for every
+    active exam, refresh yearly reference sources, rebuild, and push so Pages redeploys."""
     print(f"\n[{datetime.now():%Y-%m-%d %H:%M:%S}] Weekly trigger ...")
     _refresh_static()              # Economic Survey (yearly) — idempotent, cheap if done
     _catch_up_weeks(publish=publish)
 
 
 def news_job(publish: bool = True) -> None:
-    """Daily 00:00 trigger: refresh the news digest (only new items are summarised —
+    """Daily 00:00 IST trigger: refresh the news digest (only new items are summarised —
     see news_runner dedup), rebuild, and push so the news page redeploys."""
     print(f"\n[{datetime.now():%Y-%m-%d %H:%M:%S}] Daily news trigger ...")
     _rebuild_site(publish=publish, refresh_news=True)
@@ -262,16 +262,16 @@ def main() -> None:
         return
 
     # ── Auto-scheduled mode ─────────────────────────────────────────────────
-    # Weekly: every Monday 00:00 → ingest the just-completed week (Mon–Sun) for all
-    #         active exams → rebuild → push (Pages redeploys).
-    # News:   every day   00:00 → refresh the digest (only new items summarised) →
-    #         rebuild → push.
+    # News:   every day   00:00 IST → refresh the digest (only new items summarised) →
+    #         rebuild → push (Pages redeploys).
+    # Weekly: every Monday 01:00 IST → ingest the just-completed week (Mon–Sun) for
+    #         all active exams → rebuild → push.
     # Auto mode always publishes — the whole point is to keep the live site current.
     publish = True
 
     print("Govt Exams Prep — Scheduler")
     print(f"State: {_load_state()}")
-    print("Schedule: weekly = Mon 00:00 (all exams) · news = daily 00:00")
+    print("Schedule: news = daily 00:00 IST · weekly = Mon 01:00 IST (all exams)")
 
     # Catch up at startup: process any completed weeks missed while we were down,
     # and make the news page current immediately.
@@ -279,8 +279,8 @@ def main() -> None:
     _catch_up_weeks(publish=publish)
     news_job(publish=publish)
 
-    schedule.every().monday.at("00:00").do(weekly_job, publish=publish)
     schedule.every().day.at("00:00").do(news_job, publish=publish)
+    schedule.every().monday.at("01:00").do(weekly_job, publish=publish)
 
     print("Scheduler active. Press Ctrl+C to exit.")
     while True:
